@@ -1,14 +1,22 @@
-const M3U_URL ="https://raw.githubusercontent.com/qwerty180506/Geo/refs/heads/main/jiotv2.m3u";
+const M3U_URL =
+  "https://raw.githubusercontent.com/qwerty180506/Geo/refs/heads/main/jiotv2.m3u";
 
 // ============================================================
-// FETCH SOURCE M3U
-// ===============================================================
+// FETCH SOURCE M3U WITH CLOUDFLARE CACHE
+// ============================================================
 
 async function getM3U() {
   const response = await fetch(M3U_URL, {
     headers: {
       "User-Agent": "Mozilla/5.0",
       "Accept": "*/*",
+    },
+
+    // Cache the source M3U at Cloudflare's edge for 60 seconds.
+    // After 60 seconds Cloudflare fetches the source again.
+    cf: {
+      cacheTtl: 60,
+      cacheEverything: true,
     },
   });
 
@@ -26,27 +34,16 @@ async function getM3U() {
 // ============================================================
 
 function findChannel(m3u, channelId) {
-  const lines =
-    m3u.split(/\r?\n/);
+  const lines = m3u.split(/\r?\n/);
 
-  for (
-    let i = 0;
-    i < lines.length;
-    i++
-  ) {
-    const line =
-      lines[i].trim();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
 
-    if (
-      !line.startsWith("#EXTINF")
-    ) {
+    if (!line.startsWith("#EXTINF")) {
       continue;
     }
 
-    const match =
-      line.match(
-        /tvg-id="([^"]+)"/i
-      );
+    const match = line.match(/tvg-id="([^"]+)"/i);
 
     if (!match) {
       continue;
@@ -59,27 +56,18 @@ function findChannel(m3u, channelId) {
     }
 
     // Find URL belonging to this channel
-    for (
-      let j = i + 1;
-      j < lines.length;
-      j++
-    ) {
-      const next =
-        lines[j].trim();
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j].trim();
 
       if (!next) {
         continue;
       }
 
-      if (
-        next.startsWith("#EXTINF")
-      ) {
+      if (next.startsWith("#EXTINF")) {
         break;
       }
 
-      if (
-        next.startsWith("#")
-      ) {
+      if (next.startsWith("#")) {
         continue;
       }
 
@@ -109,33 +97,25 @@ function findChannel(m3u, channelId) {
 // CHANNEL REDIRECT
 // ============================================================
 
-export async function runTiviRedirect(
-  request
-) {
-  const url =
-    new URL(request.url);
+export async function runTiviRedirect(request) {
+  const url = new URL(request.url);
 
-  const channelId =
-    url.pathname.substring(1);
+  const channelId = url.pathname.substring(1);
 
   if (!channelId) {
-    return new Response(
-      "Missing channel ID",
-      {
-        status: 400,
-      }
-    );
+    return new Response("Missing channel ID", {
+      status: 400,
+    });
   }
 
   try {
-    const m3u =
-      await getM3U();
+    // getM3U() uses the 60-second Cloudflare cache
+    const m3u = await getM3U();
 
-    const channel =
-      findChannel(
-        m3u,
-        channelId
-      );
+    const channel = findChannel(
+      m3u,
+      channelId
+    );
 
     if (!channel) {
       return new Response(
@@ -163,8 +143,7 @@ export async function runTiviRedirect(
 
   } catch (error) {
     return new Response(
-      "Redirect error: " +
-        error.toString(),
+      "Redirect error: " + error.toString(),
       {
         status: 500,
       }
@@ -176,43 +155,29 @@ export async function runTiviRedirect(
 // GENERATE PLAYLIST
 // ============================================================
 
-export async function runTiviPlaylist(
-  request
-) {
+export async function runTiviPlaylist(request) {
   try {
-    const m3u =
-      await getM3U();
+    // Uses the same 60-second cached source M3U
+    const m3u = await getM3U();
 
-    const lines =
-      m3u.split(/\r?\n/);
+    const lines = m3u.split(/\r?\n/);
 
     const workerBase =
       new URL(request.url).origin;
 
     const output = [];
 
-    for (
-      let i = 0;
-      i < lines.length;
-      i++
-    ) {
-      const line =
-        lines[i];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
 
       // Keep normal lines
-      if (
-        !line.trim().startsWith(
-          "#EXTINF"
-        )
-      ) {
+      if (!line.trim().startsWith("#EXTINF")) {
         output.push(line);
         continue;
       }
 
       const match =
-        line.match(
-          /tvg-id="([^"]+)"/i
-        );
+        line.match(/tvg-id="([^"]+)"/i);
 
       // If no tvg-id, preserve entry
       if (!match) {
@@ -220,8 +185,7 @@ export async function runTiviPlaylist(
         continue;
       }
 
-      const channelId =
-        match[1];
+      const channelId = match[1];
 
       // Add EXTINF
       output.push(line);
@@ -232,17 +196,12 @@ export async function runTiviPlaylist(
         j < lines.length;
         j++
       ) {
-        const next =
-          lines[j];
-
-        const trimmed =
-          next.trim();
+        const next = lines[j];
+        const trimmed = next.trim();
 
         // Next channel
         if (
-          trimmed.startsWith(
-            "#EXTINF"
-          )
+          trimmed.startsWith("#EXTINF")
         ) {
           break;
         }
@@ -255,18 +214,14 @@ export async function runTiviPlaylist(
 
         // Preserve KODIPROP
         if (
-          trimmed.startsWith(
-            "#KODIPROP:"
-          )
+          trimmed.startsWith("#KODIPROP:")
         ) {
           output.push(next);
           continue;
         }
 
         // Preserve other M3U tags
-        if (
-          trimmed.startsWith("#")
-        ) {
+        if (trimmed.startsWith("#")) {
           output.push(next);
           continue;
         }
@@ -287,6 +242,7 @@ export async function runTiviPlaylist(
       output.join("\n"),
       {
         status: 200,
+
         headers: {
           "Content-Type":
             "application/x-mpegURL; charset=utf-8",
@@ -294,6 +250,9 @@ export async function runTiviPlaylist(
           "Access-Control-Allow-Origin":
             "*",
 
+          // Do NOT cache the generated playlist.
+          // Every /playlist request runs the generator,
+          // while getM3U() itself is cached for 60 seconds.
           "Cache-Control":
             "no-cache",
         },
@@ -306,6 +265,7 @@ export async function runTiviPlaylist(
         error.toString(),
       {
         status: 500,
+
         headers: {
           "Access-Control-Allow-Origin":
             "*",
