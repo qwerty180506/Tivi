@@ -2,7 +2,7 @@ const M3U_URL ="https://raw.githubusercontent.com/qwerty180506/Geo/refs/heads/ma
 
 // ============================================================
 // FETCH SOURCE M3U
-// ============================================================
+// ===============================================================
 
 async function getM3U() {
   const response = await fetch(M3U_URL, {
