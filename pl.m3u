@@ -1,4 +1,11 @@
 #EXTM3U
 
-#EXTINF:-1 tvg-name="Star Vijay Digital" tvg-logo="https://img10.hotstar.com/image/upload/f_auto/sources/r1/cms/prod/698/1782289770698-h.jpg" group-title="Entertainment", Star Vijay Digital #KODIPROP:inputstream=inputstream.adaptive #KODIPROP:inputstream.adaptive.manifest_type=mpd #KODIPROP:inputstream.adaptive.license_type=clearkey #KODIPROP:inputstream.adaptive.license_key=3d16a12b7fe0423d87e00c231d710000:f6aeb5898e5c4d8bab629a9de8befa12 #EXTVLCOPT:http-user-agent=Hotstar;in.startv.hotstar/25.02.24.8.11169@Premium Plugx(Android/15) #EXTVLCOPT:http-referrer=https://www.hotstar.com/ #EXTVLCOPT:http-extra-headers=Origin: https://www.hotstar.com #EXTVLCOPT:http-cookie=hdntl=exp=1790600741~acl=%2f*~id=02f382f30f80e0c0470f7f214d729dbd~data=hdntl~hmac=f78dbc3419f7d1ffc27c7f5fb7763f9a1b4f20cc29d23f6d78e7bf9496fa3d21 #EXTHTTP:{"Origin":"https://www.hotstar.com","Referer":"https://www.hotstar.com/","Cookie":"hdntl=exp=1790600741~acl=%2f*~id=02f382f30f80e0c0470f7f214d729dbd~data=hdntl~hmac=f78dbc3419f7d1ffc27c7f5fb7763f9a1b4f20cc29d23f6d78e7bf9496fa3d21"}
+#EXTINF:-1 tvg-name="Star Vijay Digital" tvg-logo="https://img10.hotstar.com/image/upload/f_auto/sources/r1/cms/prod/698/1782289770698-h.jpg" group-title="Entertainment", Star Vijay Digital
+#KODIPROP:inputstream=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=mpd
+#KODIPROP:inputstream.adaptive.license_type=clearkey #KODIPROP:inputstream.adaptive.license_key=3d16a12b7fe0423d87e00c231d710000:f6aeb5898e5c4d8bab629a9de8befa12 #EXTVLCOPT:http-user-agent=Hotstar;in.startv.hotstar/25.02.24.8.11169@Premium Plugx(Android/15)
+#EXTVLCOPT:http-referrer=https://www.hotstar.com/
+#EXTVLCOPT:http-extra-headers=Origin: https://www.hotstar.com
+#EXTVLCOPT:http-cookie=hdntl=exp=1790600741~acl=%2f*~id=02f382f30f80e0c0470f7f214d729dbd~data=hdntl~hmac=f78dbc3419f7d1ffc27c7f5fb7763f9a1b4f20cc29d23f6d78e7bf9496fa3d21
+#EXTHTTP:{"Origin":"https://www.hotstar.com","Referer":"https://www.hotstar.com/","Cookie":"hdntl=exp=1790600741~acl=%2f*~id=02f382f30f80e0c0470f7f214d729dbd~data=hdntl~hmac=f78dbc3419f7d1ffc27c7f5fb7763f9a1b4f20cc29d23f6d78e7bf9496fa3d21"}
 https://bin.webhookrelay.com/v1/webhooks/96d534c9-79f7-4679-ae5d-e2faf6861212
