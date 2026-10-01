@@ -1,6 +1,35 @@
 const M3U_URL =
   "https://raw.githubusercontent.com/qwerty180506/Geo/refs/heads/main/jiotv_cf.m3u";
 
+// Helper function to turn channel names into URL slugs
+function slugify(text) {
+  if (!text) return "";
+  return text
+    .toString()
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "-")        // Replace spaces with -
+    .replace(/[^\w\-]+/g, "")    // Remove all non-word chars
+    .replace(/\-\-+/g, "-");     // Replace multiple - with single -
+}
+
+// Extract channel identifier (tvg-id, or fallback to slugified tvg-name)
+function getChannelId(extinfLine) {
+  // 1. Try matching tvg-id
+  const tvgIdMatch = extinfLine.match(/tvg-id="([^"]+)"/i);
+  if (tvgIdMatch && tvgIdMatch[1].trim()) {
+    return tvgIdMatch[1].trim();
+  }
+
+  // 2. Fallback to tvg-name as a slug
+  const tvgNameMatch = extinfLine.match(/tvg-name="([^"]+)"/i);
+  if (tvgNameMatch && tvgNameMatch[1].trim()) {
+    return slugify(tvgNameMatch[1]);
+  }
+
+  return null;
+}
+
 // ============================================================
 // FETCH SOURCE M3U WITH CLOUDFLARE CACHE
 // ============================================================
@@ -13,7 +42,6 @@ async function getM3U() {
     },
 
     // Cache the source M3U at Cloudflare's edge for 60 seconds.
-    // After 60 seconds Cloudflare fetches the source again.
     cf: {
       cacheTtl: 60,
       cacheEverything: true,
@@ -21,20 +49,19 @@ async function getM3U() {
   });
 
   if (!response.ok) {
-    throw new Error(
-      `M3U fetch failed: HTTP ${response.status}`
-    );
+    throw new Error(`M3U fetch failed: HTTP ${response.status}`);
   }
 
   return await response.text();
 }
 
 // ============================================================
-// FIND CHANNEL BY TVG-ID
+// FIND CHANNEL BY TVG-ID OR TVG-NAME SLUG
 // ============================================================
 
-function findChannel(m3u, channelId) {
+function findChannel(m3u, targetChannelId) {
   const lines = m3u.split(/\r?\n/);
+  const normalizedTarget = targetChannelId.toLowerCase();
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -43,15 +70,14 @@ function findChannel(m3u, channelId) {
       continue;
     }
 
-    const match = line.match(/tvg-id="([^"]+)"/i);
+    const channelId = getChannelId(line);
 
-    if (!match) {
+    if (!channelId) {
       continue;
     }
 
-    const tvgId = match[1];
-
-    if (tvgId !== channelId) {
+    // Compare case-insensitively
+    if (channelId.toLowerCase() !== normalizedTarget) {
       continue;
     }
 
@@ -71,10 +97,7 @@ function findChannel(m3u, channelId) {
         continue;
       }
 
-      if (
-        next.startsWith("http://") ||
-        next.startsWith("https://")
-      ) {
+      if (next.startsWith("http://") || next.startsWith("https://")) {
         return {
           extinf: line,
           url: next,
@@ -99,8 +122,7 @@ function findChannel(m3u, channelId) {
 
 export async function runTiviRedirect(request) {
   const url = new URL(request.url);
-
-  const channelId = url.pathname.substring(1);
+  const channelId = decodeURIComponent(url.pathname.substring(1));
 
   if (!channelId) {
     return new Response("Missing channel ID", {
@@ -109,21 +131,13 @@ export async function runTiviRedirect(request) {
   }
 
   try {
-    // getM3U() uses the 60-second Cloudflare cache
     const m3u = await getM3U();
-
-    const channel = findChannel(
-      m3u,
-      channelId
-    );
+    const channel = findChannel(m3u, channelId);
 
     if (!channel) {
-      return new Response(
-        `Channel ID ${channelId} not found`,
-        {
-          status: 404,
-        }
-      );
+      return new Response(`Channel ID ${channelId} not found`, {
+        status: 404,
+      });
     }
 
     if (!channel.url) {
@@ -136,18 +150,11 @@ export async function runTiviRedirect(request) {
     }
 
     // Redirect directly to the real JioTV URL
-    return Response.redirect(
-      channel.url,
-      302
-    );
-
+    return Response.redirect(channel.url, 302);
   } catch (error) {
-    return new Response(
-      "Redirect error: " + error.toString(),
-      {
-        status: 500,
-      }
-    );
+    return new Response("Redirect error: " + error.toString(), {
+      status: 500,
+    });
   }
 }
 
@@ -157,120 +164,74 @@ export async function runTiviRedirect(request) {
 
 export async function runTiviPlaylist(request) {
   try {
-    // Uses the same 60-second cached source M3U
     const m3u = await getM3U();
-
     const lines = m3u.split(/\r?\n/);
-
-    const workerBase =
-      new URL(request.url).origin;
-
+    const workerBase = new URL(request.url).origin;
     const output = [];
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
 
-      // Keep normal lines
+      // Keep non-EXTINF lines
       if (!line.trim().startsWith("#EXTINF")) {
         output.push(line);
         continue;
       }
 
-      const match =
-        line.match(/tvg-id="([^"]+)"/i);
+      const channelId = getChannelId(line);
 
-      // If no tvg-id, preserve entry
-      if (!match) {
+      // If neither tvg-id nor tvg-name exists, preserve line
+      if (!channelId) {
         output.push(line);
         continue;
       }
 
-      const channelId = match[1];
-
-      // Add EXTINF
+      // Add EXTINF line
       output.push(line);
 
-      // Process channel metadata + URL
-      for (
-        let j = i + 1;
-        j < lines.length;
-        j++
-      ) {
+      // Process metadata tags + replace original stream URL
+      for (let j = i + 1; j < lines.length; j++) {
         const next = lines[j];
         const trimmed = next.trim();
 
-        // Next channel
-        if (
-          trimmed.startsWith("#EXTINF")
-        ) {
+        if (trimmed.startsWith("#EXTINF")) {
           break;
         }
 
-        // Preserve blank lines
         if (!trimmed) {
           output.push(next);
           continue;
         }
 
-        // Preserve KODIPROP
-        if (
-          trimmed.startsWith("#KODIPROP:")
-        ) {
-          output.push(next);
-          continue;
-        }
-
-        // Preserve other M3U tags
+        // Preserve KODIPROP and other M3U directives
         if (trimmed.startsWith("#")) {
           output.push(next);
           continue;
         }
 
-        // Replace original URL
-        output.push(
-          `${workerBase}/${encodeURIComponent(channelId)}`
-        );
+        // Replace original stream URL with Cloudflare Worker path URL
+        output.push(`${workerBase}/${encodeURIComponent(channelId)}`);
 
-        // Skip original URL
+        // Skip original URL in outer loop
         i = j;
-
         break;
       }
     }
 
-    return new Response(
-      output.join("\n"),
-      {
-        status: 200,
-
-        headers: {
-          "Content-Type":
-            "application/x-mpegURL; charset=utf-8",
-
-          "Access-Control-Allow-Origin":
-            "*",
-
-          // Do NOT cache the generated playlist.
-          // Every /playlist request runs the generator,
-          // while getM3U() itself is cached for 60 seconds.
-          "Cache-Control":
-            "no-cache",
-        },
-      }
-    );
-
+    return new Response(output.join("\n"), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/x-mpegURL; charset=utf-8",
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-cache",
+      },
+    });
   } catch (error) {
-    return new Response(
-      "Playlist error: " +
-        error.toString(),
-      {
-        status: 500,
-
-        headers: {
-          "Access-Control-Allow-Origin":
-            "*",
-        },
-      }
-    );
+    return new Response("Playlist error: " + error.toString(), {
+      status: 500,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
   }
 }
