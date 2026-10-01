@@ -1,5 +1,5 @@
 const M3U_URL =
-  "https://raw.githubusercontent.com/qwerty180506/Geo/refs/heads/main/jiotv2.m3u";
+  "https://raw.githubusercontent.com/qwerty180506/Geo/refs/heads/main/jiotv_cf.m3u";
 
 // ============================================================
 // FETCH SOURCE M3U WITH CLOUDFLARE CACHE
