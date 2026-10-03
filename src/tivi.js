@@ -1,5 +1,5 @@
 const M3U_URL =
-  "https://raw.githubusercontent.com/qwerty180506/Geo/refs/heads/main/jiotv_cf.m3u";
+  "https://premiumplugx.top/jiostb/mjelo.php?view=raw";
 
 // Helper function to turn channel names into URL slugs
 function slugify(text) {
