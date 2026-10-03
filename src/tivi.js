@@ -251,29 +251,41 @@ export async function runTiviPlaylist(request, sourceKey) {
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-    const pathname = url.pathname.replace(/^\/+|\/+$/g, ""); // strip outer slashes
-    const parts = pathname.split("/");
+    // Strip leading/trailing slashes and query parameters
+    const pathname = url.pathname.replace(/^\/+|\/+$/g, "");
+    const parts = pathname.split("/").filter(Boolean);
 
-    const sourceKey = parts[0];
-    const subPath = parts[1];
-
-    // Check if the source provider exists
-    if (!sourceKey || !SOURCES[sourceKey]) {
-      return new Response("Invalid provider source. Supported endpoints start with /jiotvplus/ or /jiotv/", {
-        status: 400,
+    // Root check
+    if (parts.length === 0) {
+      return new Response("M3U Worker Active. Valid endpoints: /jiotvplus/playlist, /jiotv/playlist", {
+        status: 200,
       });
     }
 
-    // 1. Playlist URL: /jiotvplus/playlist.m3u OR /jiotv/playlist.m3u
-    if (subPath === "playlist.m3u" || subPath === "playlist") {
+    const sourceKey = parts[0]?.toLowerCase();
+    const subPath = parts[1];
+
+    // Verify provider exists in SOURCES dictionary
+    if (!sourceKey || !SOURCES[sourceKey]) {
+      return new Response(
+        "Invalid provider source. Supported endpoints start with /jiotvplus/ or /jiotv/",
+        { status: 400 }
+      );
+    }
+
+    // 1. Missing channel or missing endpoint action
+    if (!subPath) {
+      return new Response("Missing channel ID or action", { status: 400 });
+    }
+
+    const decodedSubPath = decodeURIComponent(subPath).toLowerCase();
+
+    // 2. Playlist Endpoint: /jiotvplus/playlist or /jiotvplus/playlist.m3u
+    if (decodedSubPath === "playlist" || decodedSubPath === "playlist.m3u") {
       return runTiviPlaylist(request, sourceKey);
     }
 
-    // 2. Direct Channel URL: /jiotvplus/<channelId> OR /jiotv/<channelId>
-    if (subPath) {
-      return runTiviRedirect(request, sourceKey, decodeURIComponent(subPath));
-    }
-
-    return new Response("Not Found", { status: 404 });
+    // 3. Direct Channel Endpoint: /jiotvplus/<channelId> or /jiotv/<channelId>
+    return runTiviRedirect(request, sourceKey, subPath);
   },
 };
