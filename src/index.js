@@ -3,6 +3,18 @@ import { handleHotstarRequest } from "./hot.js";
 
 export default {
   async fetch(request, env, ctx) {
+    // Handle global CORS preflight requests
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "*",
+        },
+      });
+    }
+
     const url = new URL(request.url);
     // Strip leading/trailing slashes and extract path segments
     const parts = url.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
@@ -10,7 +22,7 @@ export default {
     // Root endpoint check (e.g. GET /)
     if (parts.length === 0) {
       return new Response(
-        "TIVI Worker Active. Endpoints: /jiotvplus/playlist, /jiotv/playlist, /hotstar/playlist",
+        "Worker Active. Available Endpoints: /jiotvplus/playlist, /jiotv/playlist, /hotstar/playlist",
         {
           status: 200,
           headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -18,9 +30,9 @@ export default {
       );
     }
 
-    const sourceKey = parts[0];
+    const sourceKey = parts[0].toLowerCase();
 
-    // Route Hotstar traffic directly to the worker module
+    // Route Hotstar traffic directly to hot.js
     if (sourceKey === "hotstar") {
       const response = await handleHotstarRequest(request, env, ctx);
       return response || new Response("Not Found", { status: 404 });
@@ -35,7 +47,7 @@ export default {
 
     const subPath = parts[1];
 
-    // Direct requests to /jiotvplus or /jiotv with no channel or action
+    // Direct requests to /jiotvplus or /jiotv with no action or channel ID
     if (!subPath) {
       return new Response("Missing action or channel ID (e.g. /" + sourceKey + "/playlist)", {
         status: 400,
