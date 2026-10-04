@@ -1,4 +1,5 @@
 import { runTiviRedirect, runTiviPlaylist } from "./tivi.js";
+import { handleHotstarRequest } from "./worker.js";
 
 export default {
   async fetch(request, env, ctx) {
@@ -8,20 +9,31 @@ export default {
 
     // Root endpoint check (e.g. GET /)
     if (parts.length === 0) {
-      return new Response("TIVI Worker Active. Endpoints: /jiotvplus/playlist, /jiotv/playlist", {
-        status: 200,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      });
+      return new Response(
+        "TIVI Worker Active. Endpoints: /jiotvplus/playlist, /jiotv/playlist, /hotstar/playlist",
+        {
+          status: 200,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        }
+      );
     }
 
-    const [sourceKey, subPath] = parts;
+    const sourceKey = parts[0];
+
+    // Route Hotstar traffic directly to the worker module
+    if (sourceKey === "hotstar") {
+      const response = await handleHotstarRequest(request, env, ctx);
+      return response || new Response("Not Found", { status: 404 });
+    }
 
     // Reject unknown providers early
     if (sourceKey !== "jiotvplus" && sourceKey !== "jiotv") {
-      return new Response("Invalid provider source. Use /jiotvplus/ or /jiotv/", {
+      return new Response("Invalid provider source. Use /jiotvplus/, /jiotv/, or /hotstar/", {
         status: 400,
       });
     }
+
+    const subPath = parts[1];
 
     // Direct requests to /jiotvplus or /jiotv with no channel or action
     if (!subPath) {
