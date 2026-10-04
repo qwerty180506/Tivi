@@ -1,10 +1,13 @@
 const SOURCE_PLAYLIST_URL = "https://premiumplugx.com/htt/hot.php?playlist=1";
 
+// Aggressive header stripping to bypass Akamai WAF (Error 475)
 const EXCLUDED_REQUEST_HEADERS = new Set([
   'host', 'content-length', 'transfer-encoding', 'connection',
   'keep-alive', 'proxy-authorization', 'proxy-connection',
-  'cf-ray', 'cf-connecting-ip', 'cf-visitor', 'cf-ipcountry',
-  'accept-encoding' // Forces Cloudflare to automatically decompress gzip/brotli
+  'cf-ray', 'cf-connecting-ip', 'cf-visitor', 'cf-ipcountry', 
+  'cf-ew-via', 'cdn-loop', 'x-forwarded-for', 'x-forwarded-proto', 
+  'x-real-ip', 'true-client-ip', 'x-client-ip', 'forwarded',
+  'accept-encoding' // Forces CF to decode gzip/brotli natively
 ]);
 
 const EXCLUDED_RESPONSE_HEADERS = new Set([
@@ -12,12 +15,11 @@ const EXCLUDED_RESPONSE_HEADERS = new Set([
   'connection', 'keep-alive', 'public', 'proxy-authenticate', 'server'
 ]);
 
-// Caching configuration
 const PLAYLIST_CACHE = { data: null, timestamp: 0 };
 const PLAYLIST_CACHE_TTL = 0 * 1000; 
 
 const MANIFEST_CACHE = new Map();
-const MANIFEST_CACHE_TTL = 2000; // 2.0 seconds
+const MANIFEST_CACHE_TTL = 2000; 
 
 const RE_DRM = /(<(?:laurl|clearkey:License|dash:License)[^>]*>)(https?:\/\/[^<]+)(<\/(?:laurl|clearkey:License|dash:License)>)/gi;
 const RE_HLS_TAG_URI = /URI=["']([^"']+)["']/g;
@@ -97,7 +99,6 @@ function modifyMpdManifest(mpdContent, targetUrl, hostBase) {
   const b64Base = base64UrlEncode(fullBase);
   const proxiedBaseUrl = `${hostBase}/hotstar/segment_proxy/${b64Base}/`;
 
-  // Bulletproof XML modification: Only replaces inner text, avoiding tag corruption
   if (mpdContent.includes("<BaseURL")) {
     mpdContent = mpdContent.replace(/(<BaseURL[^>]*>).*?(<\/BaseURL>)/gs, `$1${proxiedBaseUrl}$2`);
   } else if (mpdContent.includes("<Period")) {
@@ -220,9 +221,7 @@ export default {
               const lineStr = line.trim();
               if (!lineStr) continue;
 
-              if (lineStr.startsWith("#EXTVLCOPT") || lineStr.startsWith("#EXTHTTP")) {
-                continue;
-              }
+              if (lineStr.startsWith("#EXTVLCOPT") || lineStr.startsWith("#EXTHTTP")) continue;
 
               if (lineStr.startsWith("#")) {
                 if (lineStr.includes("license_key=") || lineStr.includes("license_url=")) {
@@ -283,7 +282,10 @@ export default {
 
       const rawStreamVal = rawQuery.split("stream_url=")[1];
       const pipeUrl = decodeURIComponent(rawStreamVal);
-      const { baseUrl: targetUrl, headers: customHeaders } = parsePipeUrl(pipeUrl);
+      let { baseUrl: targetUrl, headers: customHeaders } = parsePipeUrl(pipeUrl);
+      
+      // Clean malformed trailing queries that trigger Akamai Firewall blocks
+      if (targetUrl.endsWith('?')) targetUrl = targetUrl.slice(0, -1);
 
       const now = Date.now();
       if (request.method === "GET" && MANIFEST_CACHE.has(targetUrl)) {
@@ -309,12 +311,6 @@ export default {
         forwardHeaders.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
       }
 
-      // Bypass Hotstar Cloudflare IP Blocking by injecting original user IP
-      const clientIp = request.headers.get("cf-connecting-ip");
-      if (clientIp) {
-        forwardHeaders.set("X-Forwarded-For", clientIp);
-      }
-
       try {
         const fetchOpts = { method: request.method, headers: forwardHeaders, redirect: "follow" };
         if (request.method === "POST" || request.method === "PUT") {
@@ -325,7 +321,6 @@ export default {
         const contentType = (upstreamRes.headers.get("Content-Type") || "").toLowerCase();
         const targetPath = targetUrl.split('?')[0].toLowerCase();
 
-        // Safety Catch: Only parse as XML if Hotstar actually returned a successful 200 OK
         if (upstreamRes.status === 200 && (contentType.includes("dash+xml") || targetPath.endsWith(".mpd"))) {
           const textContent = await upstreamRes.text();
           const modifiedMpd = modifyMpdManifest(textContent, pipeUrl, hostBase);
@@ -343,7 +338,6 @@ export default {
             headers: { "Content-Type": "application/vnd.apple.mpegurl" }
           });
         } else {
-          // Fallback: Just return exactly what we got (fixes HTML error parsing crashes)
           const respHeaders = new Headers();
           for (const [key, val] of upstreamRes.headers.entries()) {
             if (!EXCLUDED_RESPONSE_HEADERS.has(key.toLowerCase())) {
