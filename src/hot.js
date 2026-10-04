@@ -4,7 +4,7 @@ const EXCLUDED_REQUEST_HEADERS = new Set([
   'host', 'content-length', 'transfer-encoding', 'connection',
   'keep-alive', 'proxy-authorization', 'proxy-connection',
   'cf-ray', 'cf-connecting-ip', 'cf-visitor', 'cf-ipcountry',
-  'accept-encoding' // CRITICAL FIX: Forces Cloudflare to automatically decompress Brotli/Gzip streams
+  'accept-encoding' // Forces Cloudflare to automatically decompress gzip/brotli
 ]);
 
 const EXCLUDED_RESPONSE_HEADERS = new Set([
@@ -19,9 +19,6 @@ const PLAYLIST_CACHE_TTL = 0 * 1000;
 const MANIFEST_CACHE = new Map();
 const MANIFEST_CACHE_TTL = 2000; // 2.0 seconds
 
-const RE_BASEURL = /<BaseURL>.*?<\/BaseURL>/gs; // Added 'g' flag for global replacement
-const RE_PERIOD = /(<Period[^>]*>)/;
-const RE_MPD = /(<MPD[^>]*>)/;
 const RE_DRM = /(<(?:laurl|clearkey:License|dash:License)[^>]*>)(https?:\/\/[^<]+)(<\/(?:laurl|clearkey:License|dash:License)>)/gi;
 const RE_HLS_TAG_URI = /URI=["']([^"']+)["']/g;
 const RE_CDM_SUFFIX = /(\|[^|]*\{[A-Za-z0-9_]+\}.*)$/;
@@ -99,14 +96,14 @@ function modifyMpdManifest(mpdContent, targetUrl, hostBase) {
 
   const b64Base = base64UrlEncode(fullBase);
   const proxiedBaseUrl = `${hostBase}/hotstar/segment_proxy/${b64Base}/`;
-  const baseUrlTag = `\n  <BaseURL>${proxiedBaseUrl}</BaseURL>`;
 
-  if (mpdContent.includes("<BaseURL>")) {
-    mpdContent = mpdContent.replace(RE_BASEURL, baseUrlTag.trim());
+  // Bulletproof XML modification: Only replaces inner text, avoiding tag corruption
+  if (mpdContent.includes("<BaseURL")) {
+    mpdContent = mpdContent.replace(/(<BaseURL[^>]*>).*?(<\/BaseURL>)/gs, `$1${proxiedBaseUrl}$2`);
   } else if (mpdContent.includes("<Period")) {
-    mpdContent = mpdContent.replace(RE_PERIOD, `$1${baseUrlTag}`);
+    mpdContent = mpdContent.replace(/(<Period[^>]*>)/, `$1\n  <BaseURL>${proxiedBaseUrl}</BaseURL>`);
   } else if (mpdContent.includes("<MPD")) {
-    mpdContent = mpdContent.replace(RE_MPD, `$1${baseUrlTag}`);
+    mpdContent = mpdContent.replace(/(<MPD[^>]*>)/, `$1\n  <BaseURL>${proxiedBaseUrl}</BaseURL>`);
   }
 
   mpdContent = mpdContent.replace('timeShiftBufferDepth="PT298.000S"', 'timeShiftBufferDepth="PT300.000S"');
@@ -312,6 +309,12 @@ export default {
         forwardHeaders.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
       }
 
+      // Bypass Hotstar Cloudflare IP Blocking by injecting original user IP
+      const clientIp = request.headers.get("cf-connecting-ip");
+      if (clientIp) {
+        forwardHeaders.set("X-Forwarded-For", clientIp);
+      }
+
       try {
         const fetchOpts = { method: request.method, headers: forwardHeaders, redirect: "follow" };
         if (request.method === "POST" || request.method === "PUT") {
@@ -322,23 +325,25 @@ export default {
         const contentType = (upstreamRes.headers.get("Content-Type") || "").toLowerCase();
         const targetPath = targetUrl.split('?')[0].toLowerCase();
 
-        if (contentType.includes("dash+xml") || targetPath.endsWith(".mpd")) {
+        // Safety Catch: Only parse as XML if Hotstar actually returned a successful 200 OK
+        if (upstreamRes.status === 200 && (contentType.includes("dash+xml") || targetPath.endsWith(".mpd"))) {
           const textContent = await upstreamRes.text();
           const modifiedMpd = modifyMpdManifest(textContent, pipeUrl, hostBase);
           MANIFEST_CACHE.set(targetUrl, { timestamp: now, body: modifiedMpd, contentType: "application/dash+xml" });
           response = new Response(modifiedMpd, {
-            status: upstreamRes.status,
+            status: 200,
             headers: { "Content-Type": "application/dash+xml" }
           });
-        } else if (contentType.includes("mpegurl") || contentType.includes("x-mpegurl") || targetPath.endsWith(".m3u8")) {
+        } else if (upstreamRes.status === 200 && (contentType.includes("mpegurl") || contentType.includes("x-mpegurl") || targetPath.endsWith(".m3u8"))) {
           const textContent = await upstreamRes.text();
           const modifiedHls = modifyHlsManifest(textContent, pipeUrl, hostBase);
           MANIFEST_CACHE.set(targetUrl, { timestamp: now, body: modifiedHls, contentType: "application/vnd.apple.mpegurl" });
           response = new Response(modifiedHls, {
-            status: upstreamRes.status,
+            status: 200,
             headers: { "Content-Type": "application/vnd.apple.mpegurl" }
           });
         } else {
+          // Fallback: Just return exactly what we got (fixes HTML error parsing crashes)
           const respHeaders = new Headers();
           for (const [key, val] of upstreamRes.headers.entries()) {
             if (!EXCLUDED_RESPONSE_HEADERS.has(key.toLowerCase())) {
