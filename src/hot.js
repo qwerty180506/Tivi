@@ -11,11 +11,12 @@ const EXCLUDED_RESPONSE_HEADERS = new Set([
   'connection', 'keep-alive', 'public', 'proxy-authenticate', 'server'
 ]);
 
+// Caching configuration
 const PLAYLIST_CACHE = { data: null, timestamp: 0 };
-const PLAYLIST_CACHE_TTL = 0 * 1000; 
+const PLAYLIST_CACHE_TTL = 0 * 1000; // 0 disables cache, matching your python script
 
 const MANIFEST_CACHE = new Map();
-const MANIFEST_CACHE_TTL = 2000; // 2.0 seconds
+const MANIFEST_CACHE_TTL = 2000; // 2.0 seconds for live manifests
 
 const RE_BASEURL = /<BaseURL>.*?<\/BaseURL>/s;
 const RE_PERIOD = /(<Period[^>]*>)/;
@@ -46,13 +47,18 @@ function base64UrlDecode(str) {
   return new TextDecoder().decode(bytes);
 }
 
+// Safer decode in case upstream URLs have malformed percent encoding
+function safeDecodeURIComponent(str) {
+  try { return decodeURIComponent(str); } catch (e) { return str; }
+}
+
 function cleanAndExtractUrl(rawLineUrl) {
   let url = rawLineUrl.trim();
-  if (url.includes("/hotstar/proxy?stream_url=")) {
-    url = url.split("/hotstar/proxy?stream_url=")[1];
-    url = decodeURIComponent(url);
+  if (url.includes("/proxy?stream_url=")) {
+    url = url.split("/proxy?stream_url=")[1];
+    url = safeDecodeURIComponent(url);
   }
-  return decodeURIComponent(url);
+  return safeDecodeURIComponent(url);
 }
 
 function parsePipeUrl(pipeUrl) {
@@ -89,7 +95,7 @@ function modifyMpdManifest(mpdContent, targetUrl, hostBase) {
   const fullBase = pipeString ? `${upstreamBasePath}|${pipeString}` : upstreamBasePath;
 
   const b64Base = base64UrlEncode(fullBase);
-  const proxiedBaseUrl = `${hostBase}/hotstar/segment_proxy/${b64Base}/`;
+  const proxiedBaseUrl = `${hostBase}/segment_proxy/${b64Base}/`;
   const baseUrlTag = `\n  <BaseURL>${proxiedBaseUrl}</BaseURL>`;
 
   if (mpdContent.includes("<BaseURL>")) {
@@ -106,7 +112,7 @@ function modifyMpdManifest(mpdContent, targetUrl, hostBase) {
     if (licUrl.startsWith("http")) {
       const fullLic = pipeString ? `${licUrl}|${pipeString}` : licUrl;
       const encodedLic = encodeURIComponent(fullLic);
-      return `${tagOpen}${hostBase}/hotstar/proxy?stream_url=${encodedLic}${tagClose}`;
+      return `${tagOpen}${hostBase}/proxy?stream_url=${encodedLic}${tagClose}`;
     }
     return match;
   });
@@ -129,7 +135,7 @@ function modifyHlsManifest(m3u8Content, targetUrl, hostBase) {
         let fullTagUrl = new URL(uri, baseUrl).href;
         if (pipeString) fullTagUrl += `|${pipeString}`;
         const encodedTagUrl = encodeURIComponent(fullTagUrl);
-        return `URI="${hostBase}/hotstar/proxy?stream_url=${encodedTagUrl}"`;
+        return `URI="${hostBase}/proxy?stream_url=${encodedTagUrl}"`;
       });
       modifiedLines.push(replaced);
       continue;
@@ -144,7 +150,7 @@ function modifyHlsManifest(m3u8Content, targetUrl, hostBase) {
     if (pipeString) fullSegmentUrl += `|${pipeString}`;
 
     const encodedSegment = encodeURIComponent(fullSegmentUrl);
-    modifiedLines.push(`${hostBase}/hotstar/proxy?stream_url=${encodedSegment}`);
+    modifiedLines.push(`${hostBase}/proxy?stream_url=${encodedSegment}`);
   }
 
   return modifiedLines.join('\n');
@@ -153,7 +159,7 @@ function modifyHlsManifest(m3u8Content, targetUrl, hostBase) {
 function applyCorsHeaders(response) {
   const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", "*");
-  headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
   headers.set("Access-Control-Allow-Headers", "*");
   return new Response(response.body, {
     status: response.status,
@@ -162,140 +168,149 @@ function applyCorsHeaders(response) {
   });
 }
 
-export async function handleHotstarRequest(request, env, ctx) {
-  const url = new URL(request.url);
-  const hostBase = `${url.protocol}//${url.host}`;
-  const subParts = url.pathname.replace(/^\/+|\/+$/g, "").split("/").slice(1);
-  const action = subParts[0] ? subParts[0].toLowerCase() : "";
+export default {
+  async fetch(request, env, ctx) {
+    // CRITICAL: Answer pre-flight CORS requests immediately so players don't abort streaming
+    if (request.method === "OPTIONS") {
+      return applyCorsHeaders(new Response(null, { status: 204 }));
+    }
 
-  let response;
+    const url = new URL(request.url);
+    const hostBase = `${url.protocol}//${url.host}`;
+    
+    // Accurately parse URL logic matching the Python routing paths (no /hotstar prefix)
+    const subParts = url.pathname.replace(/^\/+|\/+$/g, "").split("/");
+    const action = subParts[0] ? subParts[0].toLowerCase() : "";
 
-  // Root /hotstar or /hotstar/
-  if (!action) {
-    const html = `<!DOCTYPE html>
+    let response;
+
+    // Root (/)
+    if (!action) {
+      const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Hotstar Proxy Worker</title>
+    <title>High Speed Proxy Worker</title>
     <style>
         body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; }
         .container { max-width: 750px; margin: 0 auto; background: #1e293b; padding: 2rem; border-radius: 12px; }
         h1 { color: #38bdf8; }
-        .url-box { background: #0f172a; padding: 1rem; border-radius: 8px; font-family: monospace; color: #a5f3fc; }
+        .url-box { background: #0f172a; padding: 1rem; border-radius: 8px; font-family: monospace; color: #a5f3fc; font-size: 1.1em; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Hotstar Proxy Active</h1>
+        <h1>Worker Proxy Active</h1>
         <p>Playlist Endpoint:</p>
-        <div class="url-box">${hostBase}/hotstar/playlist</div>
+        <div class="url-box">${hostBase}/playlist.m3u</div>
     </div>
 </body>
 </html>`;
-    response = new Response(html, { headers: { "Content-Type": "text/html" } });
-  } 
-  // Playlist Endpoint (/hotstar/playlist)
-  else if (action === "playlist" || action === "playlist.m3u") {
-    const now = Date.now();
-    if (PLAYLIST_CACHE.data && (now - PLAYLIST_CACHE.timestamp) < PLAYLIST_CACHE_TTL) {
-      response = new Response(PLAYLIST_CACHE.data, {
-        headers: {
-          "Content-Type": "audio/x-mpegurl",
-          "Content-Disposition": 'inline; filename="playlist.m3u"'
-        }
-      });
-    } else {
-      try {
-        const res = await fetch(SOURCE_PLAYLIST_URL);
-        if (!res.ok) {
-          response = new Response(`Failed source playlist HTTP ${res.status}`, { status: 502 });
-        } else {
-          const rawM3u = await res.text();
-          const processedLines = [];
+      response = new Response(html, { headers: { "Content-Type": "text/html" } });
+    } 
+    // Playlist Endpoint (/playlist.m3u)
+    else if (action === "playlist" || action === "playlist.m3u") {
+      const now = Date.now();
+      if (PLAYLIST_CACHE.data && (now - PLAYLIST_CACHE.timestamp) < PLAYLIST_CACHE_TTL) {
+        response = new Response(PLAYLIST_CACHE.data, {
+          headers: {
+            "Content-Type": "audio/x-mpegurl",
+            "Content-Disposition": 'inline; filename="playlist.m3u"'
+          }
+        });
+      } else {
+        try {
+          const res = await fetch(SOURCE_PLAYLIST_URL, {
+            headers: { "User-Agent": "Mozilla/5.0" }
+          });
+          
+          if (!res.ok) {
+            response = new Response(`Failed source playlist HTTP ${res.status}`, { status: 502 });
+          } else {
+            const rawM3u = await res.text();
+            const processedLines = [];
 
-          for (let line of rawM3u.split('\n')) {
-            const lineStr = line.trim();
-            if (!lineStr) continue;
+            for (let line of rawM3u.split('\n')) {
+              const lineStr = line.trim();
+              if (!lineStr) continue;
 
-            // Remove EXTVLCOPT and EXTHTTP lines
-            if (lineStr.startsWith("#EXTVLCOPT") || lineStr.startsWith("#EXTHTTP")) {
-              continue;
-            }
+              if (lineStr.startsWith("#EXTVLCOPT") || lineStr.startsWith("#EXTHTTP")) {
+                continue;
+              }
 
-            if (lineStr.startsWith("#")) {
-              if (lineStr.includes("license_key=") || lineStr.includes("license_url=")) {
-                const eqIdx = lineStr.indexOf("=");
-                const prefix = lineStr.substring(0, eqIdx);
-                let licVal = lineStr.substring(eqIdx + 1);
+              if (lineStr.startsWith("#")) {
+                if (lineStr.includes("license_key=") || lineStr.includes("license_url=")) {
+                  const eqIdx = lineStr.indexOf("=");
+                  const prefix = lineStr.substring(0, eqIdx);
+                  let licVal = lineStr.substring(eqIdx + 1);
 
-                let cdmSuffix = "";
-                if (licVal.includes("|R{") || licVal.includes("|b{") || licVal.includes("|B{")) {
-                  const m = RE_CDM_SUFFIX.exec(licVal);
-                  if (m) {
-                    cdmSuffix = m[1];
-                    licVal = licVal.substring(0, licVal.length - cdmSuffix.length);
+                  let cdmSuffix = "";
+                  if (licVal.includes("|R{") || licVal.includes("|b{") || licVal.includes("|B{")) {
+                    const m = RE_CDM_SUFFIX.exec(licVal);
+                    if (m) {
+                      cdmSuffix = m[1];
+                      licVal = licVal.substring(0, licVal.length - cdmSuffix.length);
+                    }
+                  }
+
+                  const cleanLic = cleanAndExtractUrl(licVal);
+                  if (cleanLic.startsWith("http://") || cleanLic.startsWith("https://")) {
+                    const encodedLic = encodeURIComponent(cleanLic);
+                    processedLines.push(`${prefix}=${hostBase}/proxy?stream_url=${encodedLic}${cdmSuffix}`);
+                    continue;
                   }
                 }
-
-                const cleanLic = cleanAndExtractUrl(licVal);
-                if (cleanLic.startsWith("http://") || cleanLic.startsWith("https://")) {
-                  const encodedLic = encodeURIComponent(cleanLic);
-                  processedLines.push(`${prefix}=${hostBase}/hotstar/proxy?stream_url=${encodedLic}${cdmSuffix}`);
-                  continue;
-                }
+                processedLines.push(lineStr);
+                continue;
               }
-              processedLines.push(lineStr);
-              continue;
+
+              if (lineStr.startsWith("http://") || lineStr.startsWith("https://") || lineStr.includes("/proxy?stream_url=")) {
+                const cleanUrl = cleanAndExtractUrl(lineStr);
+                const encodedStreamUrl = encodeURIComponent(cleanUrl);
+                processedLines.push(`${hostBase}/proxy?stream_url=${encodedStreamUrl}`);
+              } else {
+                processedLines.push(lineStr);
+              }
             }
 
-            if (lineStr.startsWith("http://") || lineStr.startsWith("https://") || lineStr.includes("/hotstar/proxy?stream_url=")) {
-              const cleanUrl = cleanAndExtractUrl(lineStr);
-              const encodedStreamUrl = encodeURIComponent(cleanUrl);
-              processedLines.push(`${hostBase}/hotstar/proxy?stream_url=${encodedStreamUrl}`);
-            } else {
-              processedLines.push(lineStr);
-            }
+            const outputM3u = processedLines.join('\n');
+            PLAYLIST_CACHE.data = outputM3u;
+            PLAYLIST_CACHE.timestamp = now;
+
+            response = new Response(outputM3u, {
+              headers: {
+                "Content-Type": "audio/x-mpegurl",
+                "Content-Disposition": 'inline; filename="playlist.m3u"'
+              }
+            });
           }
-
-          const outputM3u = processedLines.join('\n');
-          PLAYLIST_CACHE.data = outputM3u;
-          PLAYLIST_CACHE.timestamp = now;
-
-          response = new Response(outputM3u, {
-            headers: {
-              "Content-Type": "audio/x-mpegurl",
-              "Content-Disposition": 'inline; filename="playlist.m3u"'
-            }
-          });
+        } catch (e) {
+          response = new Response(`Error fetching playlist: ${e.message}`, { status: 502 });
         }
-      } catch (e) {
-        response = new Response(`Error fetching playlist: ${e.message}`, { status: 502 });
       }
-    }
-  } 
-  // Proxy Endpoint (/hotstar/proxy)
-  else if (action === "proxy") {
-    const rawQuery = url.search.startsWith('?') ? url.search.substring(1) : url.search;
-    if (!rawQuery.includes("stream_url=")) {
-      return applyCorsHeaders(new Response("Error: Missing 'stream_url' parameter", { status: 400 }));
-    }
-
-    const rawStreamVal = rawQuery.split("stream_url=")[1];
-    const pipeUrl = decodeURIComponent(rawStreamVal);
-    const { baseUrl: targetUrl, headers: customHeaders } = parsePipeUrl(pipeUrl);
-
-    const now = Date.now();
-    if (request.method === "GET" && MANIFEST_CACHE.has(targetUrl)) {
-      const cached = MANIFEST_CACHE.get(targetUrl);
-      if ((now - cached.timestamp) < MANIFEST_CACHE_TTL) {
-        response = new Response(cached.body, {
-          status: 200,
-          headers: { "Content-Type": cached.contentType }
-        });
+    } 
+    // Master Proxy Endpoint (/proxy)
+    else if (action === "proxy") {
+      const rawQuery = url.search.startsWith('?') ? url.search.substring(1) : url.search;
+      if (!rawQuery.includes("stream_url=")) {
+        return applyCorsHeaders(new Response("Error: Missing 'stream_url' parameter", { status: 400 }));
       }
-    }
 
-    if (!response) {
+      const rawStreamVal = rawQuery.split("stream_url=")[1];
+      const pipeUrl = decodeURIComponent(rawStreamVal);
+      const { baseUrl: targetUrl, headers: customHeaders } = parsePipeUrl(pipeUrl);
+
+      const now = Date.now();
+      if (request.method === "GET" && MANIFEST_CACHE.has(targetUrl)) {
+        const cached = MANIFEST_CACHE.get(targetUrl);
+        if ((now - cached.timestamp) < MANIFEST_CACHE_TTL) {
+          return applyCorsHeaders(new Response(cached.body, {
+            status: 200,
+            headers: { "Content-Type": cached.contentType }
+          }));
+        }
+      }
+
       const forwardHeaders = new Headers();
       for (const [key, val] of request.headers.entries()) {
         if (!EXCLUDED_REQUEST_HEADERS.has(key.toLowerCase())) {
@@ -310,19 +325,17 @@ export async function handleHotstarRequest(request, env, ctx) {
       }
 
       try {
-        const fetchOpts = {
-          method: request.method,
-          headers: forwardHeaders,
-          redirect: "follow"
-        };
-        if (request.method === "POST") {
+        const fetchOpts = { method: request.method, headers: forwardHeaders, redirect: "follow" };
+        if (request.method === "POST" || request.method === "PUT") {
           fetchOpts.body = await request.arrayBuffer();
         }
 
         const upstreamRes = await fetch(targetUrl, fetchOpts);
         const contentType = (upstreamRes.headers.get("Content-Type") || "").toLowerCase();
+        const targetPath = targetUrl.split('?')[0].toLowerCase();
 
-        if (contentType.includes("dash+xml") || targetUrl.split('?')[0].endsWith(".mpd")) {
+        // Target text replacements exclusively for DASH and HLS lists
+        if (contentType.includes("dash+xml") || targetPath.endsWith(".mpd")) {
           const textContent = await upstreamRes.text();
           const modifiedMpd = modifyMpdManifest(textContent, pipeUrl, hostBase);
           MANIFEST_CACHE.set(targetUrl, { timestamp: now, body: modifiedMpd, contentType: "application/dash+xml" });
@@ -330,7 +343,7 @@ export async function handleHotstarRequest(request, env, ctx) {
             status: upstreamRes.status,
             headers: { "Content-Type": "application/dash+xml" }
           });
-        } else if (contentType.includes("mpegurl") || targetUrl.split('?')[0].endsWith(".m3u8")) {
+        } else if (contentType.includes("mpegurl") || contentType.includes("x-mpegurl") || targetPath.endsWith(".m3u8")) {
           const textContent = await upstreamRes.text();
           const modifiedHls = modifyHlsManifest(textContent, pipeUrl, hostBase);
           MANIFEST_CACHE.set(targetUrl, { timestamp: now, body: modifiedHls, contentType: "application/vnd.apple.mpegurl" });
@@ -339,6 +352,7 @@ export async function handleHotstarRequest(request, env, ctx) {
             headers: { "Content-Type": "application/vnd.apple.mpegurl" }
           });
         } else {
+          // Send video segments natively as standard stream objects
           const respHeaders = new Headers();
           for (const [key, val] of upstreamRes.headers.entries()) {
             if (!EXCLUDED_RESPONSE_HEADERS.has(key.toLowerCase())) {
@@ -353,59 +367,53 @@ export async function handleHotstarRequest(request, env, ctx) {
       } catch (e) {
         response = new Response(`Proxy fetch error: ${e.message}`, { status: 502 });
       }
-    }
-  } 
-  // Segment Proxy Endpoint (/hotstar/segment_proxy/<b64_base>/<segment_name>)
-  else if (action === "segment_proxy") {
-    const b64Base = subParts[1];
-    const segmentPath = subParts.slice(2).join('/');
+    } 
+    // DASH Segment Proxy Endpoint (/segment_proxy/<b64_base>/<segment_name>)
+    else if (action === "segment_proxy") {
+      const b64Base = subParts[1];
+      const segmentPath = subParts.slice(2).join('/');
 
-    try {
-      const fullUpstreamBase = base64UrlDecode(b64Base);
-      const { baseUrl, headers: customHeaders } = parsePipeUrl(fullUpstreamBase);
+      try {
+        const fullUpstreamBase = base64UrlDecode(b64Base);
+        const { baseUrl, headers: customHeaders } = parsePipeUrl(fullUpstreamBase);
 
-      const targetSegmentUrl = new URL(segmentPath, baseUrl);
-      if (url.search) {
-        targetSegmentUrl.search = url.search;
-      }
+        const targetSegmentUrl = new URL(segmentPath, baseUrl);
+        if (url.search) {
+          targetSegmentUrl.search = url.search;
+        }
 
-      const forwardHeaders = new Headers();
-      for (const [key, val] of request.headers.entries()) {
-        if (!EXCLUDED_REQUEST_HEADERS.has(key.toLowerCase())) {
+        const forwardHeaders = new Headers();
+        for (const [key, val] of request.headers.entries()) {
+          if (!EXCLUDED_REQUEST_HEADERS.has(key.toLowerCase())) {
+            forwardHeaders.set(key, val);
+          }
+        }
+        for (const [key, val] of Object.entries(customHeaders)) {
           forwardHeaders.set(key, val);
         }
-      }
-      for (const [key, val] of Object.entries(customHeaders)) {
-        forwardHeaders.set(key, val);
-      }
 
-      const fetchOpts = {
-        method: request.method,
-        headers: forwardHeaders,
-        redirect: "follow"
-      };
-      if (request.method === "POST") {
-        fetchOpts.body = await request.arrayBuffer();
-      }
+        const fetchOpts = { method: request.method, headers: forwardHeaders, redirect: "follow" };
+        if (request.method === "POST") fetchOpts.body = await request.arrayBuffer();
 
-      const upstreamRes = await fetch(targetSegmentUrl.href, fetchOpts);
-      const respHeaders = new Headers();
-      for (const [key, val] of upstreamRes.headers.entries()) {
-        if (!EXCLUDED_RESPONSE_HEADERS.has(key.toLowerCase())) {
-          respHeaders.set(key, val);
+        const upstreamRes = await fetch(targetSegmentUrl.href, fetchOpts);
+        const respHeaders = new Headers();
+        for (const [key, val] of upstreamRes.headers.entries()) {
+          if (!EXCLUDED_RESPONSE_HEADERS.has(key.toLowerCase())) {
+            respHeaders.set(key, val);
+          }
         }
+
+        response = new Response(upstreamRes.body, {
+          status: upstreamRes.status,
+          headers: respHeaders
+        });
+      } catch (e) {
+        response = new Response(`Segment fetch error: ${e.message}`, { status: 502 });
       }
-
-      response = new Response(upstreamRes.body, {
-        status: upstreamRes.status,
-        headers: respHeaders
-      });
-    } catch (e) {
-      response = new Response(`Segment fetch error: ${e.message}`, { status: 502 });
+    } else {
+      response = new Response("Not Found", { status: 404 });
     }
-  } else {
-    response = new Response("Not Found", { status: 404 });
-  }
 
-  return applyCorsHeaders(response);
-}
+    return applyCorsHeaders(response);
+  }
+};
