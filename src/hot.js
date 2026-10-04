@@ -13,10 +13,10 @@ const EXCLUDED_RESPONSE_HEADERS = new Set([
 
 // Caching configuration
 const PLAYLIST_CACHE = { data: null, timestamp: 0 };
-const PLAYLIST_CACHE_TTL = 0 * 1000; // 0 disables cache, matching your python script
+const PLAYLIST_CACHE_TTL = 0 * 1000; 
 
 const MANIFEST_CACHE = new Map();
-const MANIFEST_CACHE_TTL = 2000; // 2.0 seconds for live manifests
+const MANIFEST_CACHE_TTL = 2000; // 2.0 seconds
 
 const RE_BASEURL = /<BaseURL>.*?<\/BaseURL>/s;
 const RE_PERIOD = /(<Period[^>]*>)/;
@@ -47,15 +47,18 @@ function base64UrlDecode(str) {
   return new TextDecoder().decode(bytes);
 }
 
-// Safer decode in case upstream URLs have malformed percent encoding
 function safeDecodeURIComponent(str) {
   try { return decodeURIComponent(str); } catch (e) { return str; }
 }
 
 function cleanAndExtractUrl(rawLineUrl) {
   let url = rawLineUrl.trim();
+  // Strip both local and worker versions of the proxy path just in case
   if (url.includes("/proxy?stream_url=")) {
     url = url.split("/proxy?stream_url=")[1];
+    url = safeDecodeURIComponent(url);
+  } else if (url.includes("/hotstar/proxy?stream_url=")) {
+    url = url.split("/hotstar/proxy?stream_url=")[1];
     url = safeDecodeURIComponent(url);
   }
   return safeDecodeURIComponent(url);
@@ -95,7 +98,8 @@ function modifyMpdManifest(mpdContent, targetUrl, hostBase) {
   const fullBase = pipeString ? `${upstreamBasePath}|${pipeString}` : upstreamBasePath;
 
   const b64Base = base64UrlEncode(fullBase);
-  const proxiedBaseUrl = `${hostBase}/segment_proxy/${b64Base}/`;
+  // ADDED /hotstar/ PREFIX BACK
+  const proxiedBaseUrl = `${hostBase}/hotstar/segment_proxy/${b64Base}/`;
   const baseUrlTag = `\n  <BaseURL>${proxiedBaseUrl}</BaseURL>`;
 
   if (mpdContent.includes("<BaseURL>")) {
@@ -112,7 +116,8 @@ function modifyMpdManifest(mpdContent, targetUrl, hostBase) {
     if (licUrl.startsWith("http")) {
       const fullLic = pipeString ? `${licUrl}|${pipeString}` : licUrl;
       const encodedLic = encodeURIComponent(fullLic);
-      return `${tagOpen}${hostBase}/proxy?stream_url=${encodedLic}${tagClose}`;
+      // ADDED /hotstar/ PREFIX BACK
+      return `${tagOpen}${hostBase}/hotstar/proxy?stream_url=${encodedLic}${tagClose}`;
     }
     return match;
   });
@@ -135,7 +140,8 @@ function modifyHlsManifest(m3u8Content, targetUrl, hostBase) {
         let fullTagUrl = new URL(uri, baseUrl).href;
         if (pipeString) fullTagUrl += `|${pipeString}`;
         const encodedTagUrl = encodeURIComponent(fullTagUrl);
-        return `URI="${hostBase}/proxy?stream_url=${encodedTagUrl}"`;
+        // ADDED /hotstar/ PREFIX BACK
+        return `URI="${hostBase}/hotstar/proxy?stream_url=${encodedTagUrl}"`;
       });
       modifiedLines.push(replaced);
       continue;
@@ -150,7 +156,8 @@ function modifyHlsManifest(m3u8Content, targetUrl, hostBase) {
     if (pipeString) fullSegmentUrl += `|${pipeString}`;
 
     const encodedSegment = encodeURIComponent(fullSegmentUrl);
-    modifiedLines.push(`${hostBase}/proxy?stream_url=${encodedSegment}`);
+    // ADDED /hotstar/ PREFIX BACK
+    modifiedLines.push(`${hostBase}/hotstar/proxy?stream_url=${encodedSegment}`);
   }
 
   return modifiedLines.join('\n');
@@ -170,7 +177,6 @@ function applyCorsHeaders(response) {
 
 export default {
   async fetch(request, env, ctx) {
-    // CRITICAL: Answer pre-flight CORS requests immediately so players don't abort streaming
     if (request.method === "OPTIONS") {
       return applyCorsHeaders(new Response(null, { status: 204 }));
     }
@@ -178,13 +184,12 @@ export default {
     const url = new URL(request.url);
     const hostBase = `${url.protocol}//${url.host}`;
     
-    // Accurately parse URL logic matching the Python routing paths (no /hotstar prefix)
+    // index.js strips /hotstar from the start, so this matches "playlist" or "proxy" natively
     const subParts = url.pathname.replace(/^\/+|\/+$/g, "").split("/");
     const action = subParts[0] ? subParts[0].toLowerCase() : "";
 
     let response;
 
-    // Root (/)
     if (!action) {
       const html = `<!DOCTYPE html>
 <html lang="en">
@@ -202,13 +207,12 @@ export default {
     <div class="container">
         <h1>Worker Proxy Active</h1>
         <p>Playlist Endpoint:</p>
-        <div class="url-box">${hostBase}/playlist.m3u</div>
+        <div class="url-box">${hostBase}/hotstar/playlist.m3u</div>
     </div>
 </body>
 </html>`;
       response = new Response(html, { headers: { "Content-Type": "text/html" } });
     } 
-    // Playlist Endpoint (/playlist.m3u)
     else if (action === "playlist" || action === "playlist.m3u") {
       const now = Date.now();
       if (PLAYLIST_CACHE.data && (now - PLAYLIST_CACHE.timestamp) < PLAYLIST_CACHE_TTL) {
@@ -256,7 +260,8 @@ export default {
                   const cleanLic = cleanAndExtractUrl(licVal);
                   if (cleanLic.startsWith("http://") || cleanLic.startsWith("https://")) {
                     const encodedLic = encodeURIComponent(cleanLic);
-                    processedLines.push(`${prefix}=${hostBase}/proxy?stream_url=${encodedLic}${cdmSuffix}`);
+                    // ADDED /hotstar/ PREFIX BACK
+                    processedLines.push(`${prefix}=${hostBase}/hotstar/proxy?stream_url=${encodedLic}${cdmSuffix}`);
                     continue;
                   }
                 }
@@ -267,7 +272,8 @@ export default {
               if (lineStr.startsWith("http://") || lineStr.startsWith("https://") || lineStr.includes("/proxy?stream_url=")) {
                 const cleanUrl = cleanAndExtractUrl(lineStr);
                 const encodedStreamUrl = encodeURIComponent(cleanUrl);
-                processedLines.push(`${hostBase}/proxy?stream_url=${encodedStreamUrl}`);
+                // ADDED /hotstar/ PREFIX BACK
+                processedLines.push(`${hostBase}/hotstar/proxy?stream_url=${encodedStreamUrl}`);
               } else {
                 processedLines.push(lineStr);
               }
@@ -289,7 +295,6 @@ export default {
         }
       }
     } 
-    // Master Proxy Endpoint (/proxy)
     else if (action === "proxy") {
       const rawQuery = url.search.startsWith('?') ? url.search.substring(1) : url.search;
       if (!rawQuery.includes("stream_url=")) {
@@ -334,7 +339,6 @@ export default {
         const contentType = (upstreamRes.headers.get("Content-Type") || "").toLowerCase();
         const targetPath = targetUrl.split('?')[0].toLowerCase();
 
-        // Target text replacements exclusively for DASH and HLS lists
         if (contentType.includes("dash+xml") || targetPath.endsWith(".mpd")) {
           const textContent = await upstreamRes.text();
           const modifiedMpd = modifyMpdManifest(textContent, pipeUrl, hostBase);
@@ -352,7 +356,6 @@ export default {
             headers: { "Content-Type": "application/vnd.apple.mpegurl" }
           });
         } else {
-          // Send video segments natively as standard stream objects
           const respHeaders = new Headers();
           for (const [key, val] of upstreamRes.headers.entries()) {
             if (!EXCLUDED_RESPONSE_HEADERS.has(key.toLowerCase())) {
@@ -368,7 +371,6 @@ export default {
         response = new Response(`Proxy fetch error: ${e.message}`, { status: 502 });
       }
     } 
-    // DASH Segment Proxy Endpoint (/segment_proxy/<b64_base>/<segment_name>)
     else if (action === "segment_proxy") {
       const b64Base = subParts[1];
       const segmentPath = subParts.slice(2).join('/');
