@@ -12,7 +12,7 @@ const EXCLUDED_RESPONSE_HEADERS = new Set([
 ]);
 
 const PLAYLIST_CACHE = { data: null, timestamp: 0 };
-const PLAYLIST_CACHE_TTL = 0 * 1000; // 60 seconds
+const PLAYLIST_CACHE_TTL = 0 * 1000; 
 
 const MANIFEST_CACHE = new Map();
 const MANIFEST_CACHE_TTL = 2000; // 2.0 seconds
@@ -121,12 +121,8 @@ function modifyHlsManifest(m3u8Content, targetUrl, hostBase) {
   const modifiedLines = [];
 
   for (let line of lines) {
-    if (
-  lineStr.startsWith("#EXTVLCOPT") ||
-  lineStr.startsWith("#EXTHTTP")
-) {
-  continue;
-}
+    const lineStr = line.trim();
+    if (!lineStr) continue;
 
     if (lineStr.startsWith("#EXT-X-KEY") || lineStr.startsWith("#EXT-X-MEDIA") || lineStr.startsWith("#EXT-X-SESSION-KEY")) {
       const replaced = lineStr.replace(RE_HLS_TAG_URI, (match, uri) => {
@@ -220,6 +216,11 @@ export async function handleHotstarRequest(request, env, ctx) {
           for (let line of rawM3u.split('\n')) {
             const lineStr = line.trim();
             if (!lineStr) continue;
+
+            // Remove EXTVLCOPT and EXTHTTP lines
+            if (lineStr.startsWith("#EXTVLCOPT") || lineStr.startsWith("#EXTHTTP")) {
+              continue;
+            }
 
             if (lineStr.startsWith("#")) {
               if (lineStr.includes("license_key=") || lineStr.includes("license_url=")) {
