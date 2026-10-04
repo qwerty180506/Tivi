@@ -12,7 +12,7 @@ const EXCLUDED_RESPONSE_HEADERS = new Set([
 ]);
 
 const PLAYLIST_CACHE = { data: null, timestamp: 0 };
-const PLAYLIST_CACHE_TTL = 60 * 1000; // 60 seconds
+const PLAYLIST_CACHE_TTL = 0 * 1000; // 60 seconds
 
 const MANIFEST_CACHE = new Map();
 const MANIFEST_CACHE_TTL = 2000; // 2.0 seconds
