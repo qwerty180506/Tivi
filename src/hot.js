@@ -3,7 +3,8 @@ const SOURCE_PLAYLIST_URL = "https://premiumplugx.com/htt/hot.php?playlist=1";
 const EXCLUDED_REQUEST_HEADERS = new Set([
   'host', 'content-length', 'transfer-encoding', 'connection',
   'keep-alive', 'proxy-authorization', 'proxy-connection',
-  'cf-ray', 'cf-connecting-ip', 'cf-visitor', 'cf-ipcountry'
+  'cf-ray', 'cf-connecting-ip', 'cf-visitor', 'cf-ipcountry',
+  'accept-encoding' // CRITICAL FIX: Forces Cloudflare to automatically decompress Brotli/Gzip streams
 ]);
 
 const EXCLUDED_RESPONSE_HEADERS = new Set([
@@ -18,7 +19,7 @@ const PLAYLIST_CACHE_TTL = 0 * 1000;
 const MANIFEST_CACHE = new Map();
 const MANIFEST_CACHE_TTL = 2000; // 2.0 seconds
 
-const RE_BASEURL = /<BaseURL>.*?<\/BaseURL>/s;
+const RE_BASEURL = /<BaseURL>.*?<\/BaseURL>/gs; // Added 'g' flag for global replacement
 const RE_PERIOD = /(<Period[^>]*>)/;
 const RE_MPD = /(<MPD[^>]*>)/;
 const RE_DRM = /(<(?:laurl|clearkey:License|dash:License)[^>]*>)(https?:\/\/[^<]+)(<\/(?:laurl|clearkey:License|dash:License)>)/gi;
@@ -53,7 +54,6 @@ function safeDecodeURIComponent(str) {
 
 function cleanAndExtractUrl(rawLineUrl) {
   let url = rawLineUrl.trim();
-  // Strip both local and worker versions of the proxy path just in case
   if (url.includes("/proxy?stream_url=")) {
     url = url.split("/proxy?stream_url=")[1];
     url = safeDecodeURIComponent(url);
@@ -98,7 +98,6 @@ function modifyMpdManifest(mpdContent, targetUrl, hostBase) {
   const fullBase = pipeString ? `${upstreamBasePath}|${pipeString}` : upstreamBasePath;
 
   const b64Base = base64UrlEncode(fullBase);
-  // ADDED /hotstar/ PREFIX BACK
   const proxiedBaseUrl = `${hostBase}/hotstar/segment_proxy/${b64Base}/`;
   const baseUrlTag = `\n  <BaseURL>${proxiedBaseUrl}</BaseURL>`;
 
@@ -116,7 +115,6 @@ function modifyMpdManifest(mpdContent, targetUrl, hostBase) {
     if (licUrl.startsWith("http")) {
       const fullLic = pipeString ? `${licUrl}|${pipeString}` : licUrl;
       const encodedLic = encodeURIComponent(fullLic);
-      // ADDED /hotstar/ PREFIX BACK
       return `${tagOpen}${hostBase}/hotstar/proxy?stream_url=${encodedLic}${tagClose}`;
     }
     return match;
@@ -140,7 +138,6 @@ function modifyHlsManifest(m3u8Content, targetUrl, hostBase) {
         let fullTagUrl = new URL(uri, baseUrl).href;
         if (pipeString) fullTagUrl += `|${pipeString}`;
         const encodedTagUrl = encodeURIComponent(fullTagUrl);
-        // ADDED /hotstar/ PREFIX BACK
         return `URI="${hostBase}/hotstar/proxy?stream_url=${encodedTagUrl}"`;
       });
       modifiedLines.push(replaced);
@@ -156,7 +153,6 @@ function modifyHlsManifest(m3u8Content, targetUrl, hostBase) {
     if (pipeString) fullSegmentUrl += `|${pipeString}`;
 
     const encodedSegment = encodeURIComponent(fullSegmentUrl);
-    // ADDED /hotstar/ PREFIX BACK
     modifiedLines.push(`${hostBase}/hotstar/proxy?stream_url=${encodedSegment}`);
   }
 
@@ -184,7 +180,6 @@ export default {
     const url = new URL(request.url);
     const hostBase = `${url.protocol}//${url.host}`;
     
-    // index.js strips /hotstar from the start, so this matches "playlist" or "proxy" natively
     const subParts = url.pathname.replace(/^\/+|\/+$/g, "").split("/");
     const action = subParts[0] ? subParts[0].toLowerCase() : "";
 
@@ -196,19 +191,9 @@ export default {
 <head>
     <meta charset="UTF-8">
     <title>High Speed Proxy Worker</title>
-    <style>
-        body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; }
-        .container { max-width: 750px; margin: 0 auto; background: #1e293b; padding: 2rem; border-radius: 12px; }
-        h1 { color: #38bdf8; }
-        .url-box { background: #0f172a; padding: 1rem; border-radius: 8px; font-family: monospace; color: #a5f3fc; font-size: 1.1em; }
-    </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Worker Proxy Active</h1>
-        <p>Playlist Endpoint:</p>
-        <div class="url-box">${hostBase}/hotstar/playlist.m3u</div>
-    </div>
+    <h1>Worker Proxy Active</h1>
 </body>
 </html>`;
       response = new Response(html, { headers: { "Content-Type": "text/html" } });
@@ -260,7 +245,6 @@ export default {
                   const cleanLic = cleanAndExtractUrl(licVal);
                   if (cleanLic.startsWith("http://") || cleanLic.startsWith("https://")) {
                     const encodedLic = encodeURIComponent(cleanLic);
-                    // ADDED /hotstar/ PREFIX BACK
                     processedLines.push(`${prefix}=${hostBase}/hotstar/proxy?stream_url=${encodedLic}${cdmSuffix}`);
                     continue;
                   }
@@ -272,7 +256,6 @@ export default {
               if (lineStr.startsWith("http://") || lineStr.startsWith("https://") || lineStr.includes("/proxy?stream_url=")) {
                 const cleanUrl = cleanAndExtractUrl(lineStr);
                 const encodedStreamUrl = encodeURIComponent(cleanUrl);
-                // ADDED /hotstar/ PREFIX BACK
                 processedLines.push(`${hostBase}/hotstar/proxy?stream_url=${encodedStreamUrl}`);
               } else {
                 processedLines.push(lineStr);
