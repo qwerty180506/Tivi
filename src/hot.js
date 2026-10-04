@@ -121,8 +121,12 @@ function modifyHlsManifest(m3u8Content, targetUrl, hostBase) {
   const modifiedLines = [];
 
   for (let line of lines) {
-    const lineStr = line.trim();
-    if (!lineStr) continue;
+    if (
+  lineStr.startsWith("#EXTVLCOPT") ||
+  lineStr.startsWith("#EXTHTTP")
+) {
+  continue;
+}
 
     if (lineStr.startsWith("#EXT-X-KEY") || lineStr.startsWith("#EXT-X-MEDIA") || lineStr.startsWith("#EXT-X-SESSION-KEY")) {
       const replaced = lineStr.replace(RE_HLS_TAG_URI, (match, uri) => {
