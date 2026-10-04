@@ -1,5 +1,5 @@
 import { runTiviRedirect, runTiviPlaylist } from "./tivi.js";
-import { handleHotstarRequest } from "./worker.js";
+import { handleHotstarRequest } from "./hot.js";
 
 export default {
   async fetch(request, env, ctx) {
