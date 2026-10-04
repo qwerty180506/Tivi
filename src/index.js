@@ -1,5 +1,5 @@
 import { runTiviRedirect, runTiviPlaylist } from "./tivi.js";
-import { handleHotstarRequest } from "./hot.js";
+import hotstarModule from "./hot.js"; // Changed to import the default export
 
 export default {
   async fetch(request, env, ctx) {
@@ -9,7 +9,7 @@ export default {
         status: 204,
         headers: {
           "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE",
           "Access-Control-Allow-Headers": "*",
         },
       });
@@ -34,7 +34,15 @@ export default {
 
     // Route Hotstar traffic directly to hot.js
     if (sourceKey === "hotstar") {
-      const response = await handleHotstarRequest(request, env, ctx);
+      // Create a cloned request with the "/hotstar" prefix stripped from the URL.
+      // This allows hot.js to easily read "/playlist.m3u" or "/proxy" as the root action.
+      const modifiedUrl = new URL(request.url);
+      modifiedUrl.pathname = modifiedUrl.pathname.replace(/^\/hotstar/i, "");
+      
+      const modifiedRequest = new Request(modifiedUrl, request);
+
+      // Call the default fetch handler from the updated hot.js
+      const response = await hotstarModule.fetch(modifiedRequest, env, ctx);
       return response || new Response("Not Found", { status: 404 });
     }
 
