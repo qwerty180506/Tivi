@@ -11,14 +11,12 @@ const EXCLUDED_RESPONSE_HEADERS = new Set([
   'connection', 'keep-alive', 'public', 'proxy-authenticate', 'server'
 ]);
 
-// In-Memory Micro-Caches
 const PLAYLIST_CACHE = { data: null, timestamp: 0 };
-const PLAYLIST_CACHE_TTL = 60 * 1000; // 60 seconds (ms)
+const PLAYLIST_CACHE_TTL = 60 * 1000; // 60 seconds
 
-const MANIFEST_CACHE = new Map(); // targetUrl -> { timestamp, body, contentType }
-const MANIFEST_CACHE_TTL = 2000; // 2.0 seconds (ms)
+const MANIFEST_CACHE = new Map();
+const MANIFEST_CACHE_TTL = 2000; // 2.0 seconds
 
-// Pre-compiled Regular Expressions
 const RE_BASEURL = /<BaseURL>.*?<\/BaseURL>/s;
 const RE_PERIOD = /(<Period[^>]*>)/;
 const RE_MPD = /(<MPD[^>]*>)/;
@@ -26,7 +24,6 @@ const RE_DRM = /(<(?:laurl|clearkey:License|dash:License)[^>]*>)(https?:\/\/[^<]
 const RE_HLS_TAG_URI = /URI=["']([^"']+)["']/g;
 const RE_CDM_SUFFIX = /(\|[^|]*\{[A-Za-z0-9_]+\}.*)$/;
 
-// Base64 URL-Safe Helpers
 function base64UrlEncode(str) {
   const bytes = new TextEncoder().encode(str);
   let binary = '';
@@ -165,232 +162,149 @@ function applyCorsHeaders(response) {
   });
 }
 
-export default {
-  async fetch(request, env, ctx) {
-    if (request.method === "OPTIONS") {
-      return applyCorsHeaders(new Response(null, { status: 204 }));
-    }
+export async function handleHotstarRequest(request, env, ctx) {
+  const url = new URL(request.url);
+  const hostBase = `${url.protocol}//${url.host}`;
+  const subParts = url.pathname.replace(/^\/+|\/+$/g, "").split("/").slice(1);
+  const action = subParts[0] ? subParts[0].toLowerCase() : "";
 
-    const url = new URL(request.url);
-    const hostBase = `${url.protocol}//${url.host}`;
-    let response;
+  let response;
 
-    // 1. Root Endpoint (/hotstar or /)
-    if (url.pathname === "/" || url.pathname === "/hotstar" || url.pathname === "/hotstar/") {
-      const html = `<!DOCTYPE html>
+  // Root /hotstar or /hotstar/
+  if (!action) {
+    const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hotstar Proxy Worker</title>
     <style>
-        body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; margin: 0; }
-        .container { max-width: 750px; margin: 0 auto; background: #1e293b; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
-        h1 { color: #38bdf8; margin-top: 0; }
-        .status { display: inline-block; padding: 4px 12px; background: #22c55e; color: #000; font-weight: bold; border-radius: 20px; font-size: 0.85rem; }
-        .section { margin-top: 1.5rem; }
-        .label { font-weight: 600; color: #94a3b8; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
-        .url-box { background: #0f172a; padding: 1rem; border-radius: 8px; border: 1px solid #334155; word-break: break-all; font-family: monospace; font-size: 1rem; color: #a5f3fc; }
-        .highlight { color: #facc15; border-color: #ca8a04; }
+        body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; }
+        .container { max-width: 750px; margin: 0 auto; background: #1e293b; padding: 2rem; border-radius: 12px; }
+        h1 { color: #38bdf8; }
+        .url-box { background: #0f172a; padding: 1rem; border-radius: 8px; font-family: monospace; color: #a5f3fc; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Hotstar Proxy <span class="status">TURBO MODE ACTIVE</span></h1>
-        <p>Micro-Caching & Low Latency Worker Subroute Execution Active.</p>
-        <div class="section">
-            <div class="label">Playlist URL:</div>
-            <div class="url-box highlight">${hostBase}/hotstar/playlist</div>
-        </div>
+        <h1>Hotstar Proxy Active</h1>
+        <p>Playlist Endpoint:</p>
+        <div class="url-box">${hostBase}/hotstar/playlist</div>
     </div>
 </body>
 </html>`;
-      response = new Response(html, { headers: { "Content-Type": "text/html" } });
-    }
+    response = new Response(html, { headers: { "Content-Type": "text/html" } });
+  } 
+  // Playlist Endpoint (/hotstar/playlist)
+  else if (action === "playlist" || action === "playlist.m3u") {
+    const now = Date.now();
+    if (PLAYLIST_CACHE.data && (now - PLAYLIST_CACHE.timestamp) < PLAYLIST_CACHE_TTL) {
+      response = new Response(PLAYLIST_CACHE.data, {
+        headers: {
+          "Content-Type": "audio/x-mpegurl",
+          "Content-Disposition": 'inline; filename="playlist.m3u"'
+        }
+      });
+    } else {
+      try {
+        const res = await fetch(SOURCE_PLAYLIST_URL);
+        if (!res.ok) {
+          response = new Response(`Failed source playlist HTTP ${res.status}`, { status: 502 });
+        } else {
+          const rawM3u = await res.text();
+          const processedLines = [];
 
-    // 2. Playlist Endpoint (/hotstar/playlist)
-    else if (url.pathname === "/hotstar/playlist") {
-      const now = Date.now();
-      if (PLAYLIST_CACHE.data && (now - PLAYLIST_CACHE.timestamp) < PLAYLIST_CACHE_TTL) {
-        response = new Response(PLAYLIST_CACHE.data, {
-          headers: {
-            "Content-Type": "audio/x-mpegurl",
-            "Content-Disposition": 'inline; filename="playlist.m3u"'
-          }
-        });
-      } else {
-        try {
-          const res = await fetch(SOURCE_PLAYLIST_URL);
-          if (!res.ok) {
-            response = new Response(`Failed source playlist HTTP ${res.status}`, { status: 502 });
-          } else {
-            const rawM3u = await res.text();
-            const processedLines = [];
+          for (let line of rawM3u.split('\n')) {
+            const lineStr = line.trim();
+            if (!lineStr) continue;
 
-            for (let line of rawM3u.split('\n')) {
-              const lineStr = line.trim();
-              if (!lineStr) continue;
+            if (lineStr.startsWith("#")) {
+              if (lineStr.includes("license_key=") || lineStr.includes("license_url=")) {
+                const eqIdx = lineStr.indexOf("=");
+                const prefix = lineStr.substring(0, eqIdx);
+                let licVal = lineStr.substring(eqIdx + 1);
 
-              if (lineStr.startsWith("#")) {
-                if (lineStr.includes("license_key=") || lineStr.includes("license_url=")) {
-                  const eqIdx = lineStr.indexOf("=");
-                  const prefix = lineStr.substring(0, eqIdx);
-                  let licVal = lineStr.substring(eqIdx + 1);
-
-                  let cdmSuffix = "";
-                  if (licVal.includes("|R{") || licVal.includes("|b{") || licVal.includes("|B{")) {
-                    const m = RE_CDM_SUFFIX.exec(licVal);
-                    if (m) {
-                      cdmSuffix = m[1];
-                      licVal = licVal.substring(0, licVal.length - cdmSuffix.length);
-                    }
-                  }
-
-                  const cleanLic = cleanAndExtractUrl(licVal);
-                  if (cleanLic.startsWith("http://") || cleanLic.startsWith("https://")) {
-                    const encodedLic = encodeURIComponent(cleanLic);
-                    processedLines.push(`${prefix}=${hostBase}/hotstar/proxy?stream_url=${encodedLic}${cdmSuffix}`);
-                    continue;
+                let cdmSuffix = "";
+                if (licVal.includes("|R{") || licVal.includes("|b{") || licVal.includes("|B{")) {
+                  const m = RE_CDM_SUFFIX.exec(licVal);
+                  if (m) {
+                    cdmSuffix = m[1];
+                    licVal = licVal.substring(0, licVal.length - cdmSuffix.length);
                   }
                 }
-                processedLines.push(lineStr);
-                continue;
-              }
 
-              if (lineStr.startsWith("http://") || lineStr.startsWith("https://") || lineStr.includes("/hotstar/proxy?stream_url=")) {
-                const cleanUrl = cleanAndExtractUrl(lineStr);
-                const encodedStreamUrl = encodeURIComponent(cleanUrl);
-                processedLines.push(`${hostBase}/hotstar/proxy?stream_url=${encodedStreamUrl}`);
-              } else {
-                processedLines.push(lineStr);
+                const cleanLic = cleanAndExtractUrl(licVal);
+                if (cleanLic.startsWith("http://") || cleanLic.startsWith("https://")) {
+                  const encodedLic = encodeURIComponent(cleanLic);
+                  processedLines.push(`${prefix}=${hostBase}/hotstar/proxy?stream_url=${encodedLic}${cdmSuffix}`);
+                  continue;
+                }
               }
+              processedLines.push(lineStr);
+              continue;
             }
 
-            const outputM3u = processedLines.join('\n');
-            PLAYLIST_CACHE.data = outputM3u;
-            PLAYLIST_CACHE.timestamp = now;
-
-            response = new Response(outputM3u, {
-              headers: {
-                "Content-Type": "audio/x-mpegurl",
-                "Content-Disposition": 'inline; filename="playlist.m3u"'
-              }
-            });
+            if (lineStr.startsWith("http://") || lineStr.startsWith("https://") || lineStr.includes("/hotstar/proxy?stream_url=")) {
+              const cleanUrl = cleanAndExtractUrl(lineStr);
+              const encodedStreamUrl = encodeURIComponent(cleanUrl);
+              processedLines.push(`${hostBase}/hotstar/proxy?stream_url=${encodedStreamUrl}`);
+            } else {
+              processedLines.push(lineStr);
+            }
           }
-        } catch (e) {
-          response = new Response(`Error fetching playlist: ${e.message}`, { status: 502 });
-        }
-      }
-    }
 
-    // 3. Proxy Endpoint (/hotstar/proxy)
-    else if (url.pathname === "/hotstar/proxy") {
-      const rawQuery = url.search.startsWith('?') ? url.search.substring(1) : url.search;
-      if (!rawQuery.includes("stream_url=")) {
-        return applyCorsHeaders(new Response("Error: Missing 'stream_url' parameter", { status: 400 }));
-      }
+          const outputM3u = processedLines.join('\n');
+          PLAYLIST_CACHE.data = outputM3u;
+          PLAYLIST_CACHE.timestamp = now;
 
-      const rawStreamVal = rawQuery.split("stream_url=")[1];
-      const pipeUrl = decodeURIComponent(rawStreamVal);
-      const { baseUrl: targetUrl, headers: customHeaders } = parsePipeUrl(pipeUrl);
-
-      const now = Date.now();
-      if (request.method === "GET" && MANIFEST_CACHE.has(targetUrl)) {
-        const cached = MANIFEST_CACHE.get(targetUrl);
-        if ((now - cached.timestamp) < MANIFEST_CACHE_TTL) {
-          response = new Response(cached.body, {
-            status: 200,
-            headers: { "Content-Type": cached.contentType }
+          response = new Response(outputM3u, {
+            headers: {
+              "Content-Type": "audio/x-mpegurl",
+              "Content-Disposition": 'inline; filename="playlist.m3u"'
+            }
           });
         }
+      } catch (e) {
+        response = new Response(`Error fetching playlist: ${e.message}`, { status: 502 });
       }
+    }
+  } 
+  // Proxy Endpoint (/hotstar/proxy)
+  else if (action === "proxy") {
+    const rawQuery = url.search.startsWith('?') ? url.search.substring(1) : url.search;
+    if (!rawQuery.includes("stream_url=")) {
+      return applyCorsHeaders(new Response("Error: Missing 'stream_url' parameter", { status: 400 }));
+    }
 
-      if (!response) {
-        const forwardHeaders = new Headers();
-        for (const [key, val] of request.headers.entries()) {
-          if (!EXCLUDED_REQUEST_HEADERS.has(key.toLowerCase())) {
-            forwardHeaders.set(key, val);
-          }
-        }
-        for (const [key, val] of Object.entries(customHeaders)) {
-          forwardHeaders.set(key, val);
-        }
-        if (!forwardHeaders.has("User-Agent")) {
-          forwardHeaders.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-        }
+    const rawStreamVal = rawQuery.split("stream_url=")[1];
+    const pipeUrl = decodeURIComponent(rawStreamVal);
+    const { baseUrl: targetUrl, headers: customHeaders } = parsePipeUrl(pipeUrl);
 
-        try {
-          const fetchOpts = {
-            method: request.method,
-            headers: forwardHeaders,
-            redirect: "follow"
-          };
-          if (request.method === "POST") {
-            fetchOpts.body = await request.arrayBuffer();
-          }
-
-          const upstreamRes = await fetch(targetUrl, fetchOpts);
-          const contentType = (upstreamRes.headers.get("Content-Type") || "").toLowerCase();
-
-          if (contentType.includes("dash+xml") || targetUrl.split('?')[0].endsWith(".mpd")) {
-            const textContent = await upstreamRes.text();
-            const modifiedMpd = modifyMpdManifest(textContent, pipeUrl, hostBase);
-            MANIFEST_CACHE.set(targetUrl, { timestamp: now, body: modifiedMpd, contentType: "application/dash+xml" });
-            response = new Response(modifiedMpd, {
-              status: upstreamRes.status,
-              headers: { "Content-Type": "application/dash+xml" }
-            });
-          } else if (contentType.includes("mpegurl") || targetUrl.split('?')[0].endsWith(".m3u8")) {
-            const textContent = await upstreamRes.text();
-            const modifiedHls = modifyHlsManifest(textContent, pipeUrl, hostBase);
-            MANIFEST_CACHE.set(targetUrl, { timestamp: now, body: modifiedHls, contentType: "application/vnd.apple.mpegurl" });
-            response = new Response(modifiedHls, {
-              status: upstreamRes.status,
-              headers: { "Content-Type": "application/vnd.apple.mpegurl" }
-            });
-          } else {
-            const respHeaders = new Headers();
-            for (const [key, val] of upstreamRes.headers.entries()) {
-              if (!EXCLUDED_RESPONSE_HEADERS.has(key.toLowerCase())) {
-                respHeaders.set(key, val);
-              }
-            }
-            response = new Response(upstreamRes.body, {
-              status: upstreamRes.status,
-              headers: respHeaders
-            });
-          }
-        } catch (e) {
-          response = new Response(`Proxy fetch error: ${e.message}`, { status: 502 });
-        }
+    const now = Date.now();
+    if (request.method === "GET" && MANIFEST_CACHE.has(targetUrl)) {
+      const cached = MANIFEST_CACHE.get(targetUrl);
+      if ((now - cached.timestamp) < MANIFEST_CACHE_TTL) {
+        response = new Response(cached.body, {
+          status: 200,
+          headers: { "Content-Type": cached.contentType }
+        });
       }
     }
 
-    // 4. Segment Proxy Endpoint (/hotstar/segment_proxy/<b64_base>/<segment_name>)
-    else if (url.pathname.startsWith("/hotstar/segment_proxy/")) {
-      const parts = url.pathname.replace("/hotstar/segment_proxy/", "").split('/');
-      const b64Base = parts[0];
-      const segmentPath = parts.slice(1).join('/');
-
-      try {
-        const fullUpstreamBase = base64UrlDecode(b64Base);
-        const { baseUrl, pipeString, headers: customHeaders } = parsePipeUrl(fullUpstreamBase);
-
-        const targetSegmentUrl = new URL(segmentPath, baseUrl);
-        if (url.search) {
-          targetSegmentUrl.search = url.search;
-        }
-
-        const forwardHeaders = new Headers();
-        for (const [key, val] of request.headers.entries()) {
-          if (!EXCLUDED_REQUEST_HEADERS.has(key.toLowerCase())) {
-            forwardHeaders.set(key, val);
-          }
-        }
-        for (const [key, val] of Object.entries(customHeaders)) {
+    if (!response) {
+      const forwardHeaders = new Headers();
+      for (const [key, val] of request.headers.entries()) {
+        if (!EXCLUDED_REQUEST_HEADERS.has(key.toLowerCase())) {
           forwardHeaders.set(key, val);
         }
+      }
+      for (const [key, val] of Object.entries(customHeaders)) {
+        forwardHeaders.set(key, val);
+      }
+      if (!forwardHeaders.has("User-Agent")) {
+        forwardHeaders.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+      }
 
+      try {
         const fetchOpts = {
           method: request.method,
           headers: forwardHeaders,
@@ -400,25 +314,93 @@ export default {
           fetchOpts.body = await request.arrayBuffer();
         }
 
-        const upstreamRes = await fetch(targetSegmentUrl.href, fetchOpts);
-        const respHeaders = new Headers();
-        for (const [key, val] of upstreamRes.headers.entries()) {
-          if (!EXCLUDED_RESPONSE_HEADERS.has(key.toLowerCase())) {
-            respHeaders.set(key, val);
+        const upstreamRes = await fetch(targetUrl, fetchOpts);
+        const contentType = (upstreamRes.headers.get("Content-Type") || "").toLowerCase();
+
+        if (contentType.includes("dash+xml") || targetUrl.split('?')[0].endsWith(".mpd")) {
+          const textContent = await upstreamRes.text();
+          const modifiedMpd = modifyMpdManifest(textContent, pipeUrl, hostBase);
+          MANIFEST_CACHE.set(targetUrl, { timestamp: now, body: modifiedMpd, contentType: "application/dash+xml" });
+          response = new Response(modifiedMpd, {
+            status: upstreamRes.status,
+            headers: { "Content-Type": "application/dash+xml" }
+          });
+        } else if (contentType.includes("mpegurl") || targetUrl.split('?')[0].endsWith(".m3u8")) {
+          const textContent = await upstreamRes.text();
+          const modifiedHls = modifyHlsManifest(textContent, pipeUrl, hostBase);
+          MANIFEST_CACHE.set(targetUrl, { timestamp: now, body: modifiedHls, contentType: "application/vnd.apple.mpegurl" });
+          response = new Response(modifiedHls, {
+            status: upstreamRes.status,
+            headers: { "Content-Type": "application/vnd.apple.mpegurl" }
+          });
+        } else {
+          const respHeaders = new Headers();
+          for (const [key, val] of upstreamRes.headers.entries()) {
+            if (!EXCLUDED_RESPONSE_HEADERS.has(key.toLowerCase())) {
+              respHeaders.set(key, val);
+            }
           }
+          response = new Response(upstreamRes.body, {
+            status: upstreamRes.status,
+            headers: respHeaders
+          });
         }
-
-        response = new Response(upstreamRes.body, {
-          status: upstreamRes.status,
-          headers: respHeaders
-        });
       } catch (e) {
-        response = new Response(`Segment fetch error: ${e.message}`, { status: 502 });
+        response = new Response(`Proxy fetch error: ${e.message}`, { status: 502 });
       }
-    } else {
-      response = new Response("Not Found", { status: 404 });
     }
+  } 
+  // Segment Proxy Endpoint (/hotstar/segment_proxy/<b64_base>/<segment_name>)
+  else if (action === "segment_proxy") {
+    const b64Base = subParts[1];
+    const segmentPath = subParts.slice(2).join('/');
 
-    return applyCorsHeaders(response);
+    try {
+      const fullUpstreamBase = base64UrlDecode(b64Base);
+      const { baseUrl, headers: customHeaders } = parsePipeUrl(fullUpstreamBase);
+
+      const targetSegmentUrl = new URL(segmentPath, baseUrl);
+      if (url.search) {
+        targetSegmentUrl.search = url.search;
+      }
+
+      const forwardHeaders = new Headers();
+      for (const [key, val] of request.headers.entries()) {
+        if (!EXCLUDED_REQUEST_HEADERS.has(key.toLowerCase())) {
+          forwardHeaders.set(key, val);
+        }
+      }
+      for (const [key, val] of Object.entries(customHeaders)) {
+        forwardHeaders.set(key, val);
+      }
+
+      const fetchOpts = {
+        method: request.method,
+        headers: forwardHeaders,
+        redirect: "follow"
+      };
+      if (request.method === "POST") {
+        fetchOpts.body = await request.arrayBuffer();
+      }
+
+      const upstreamRes = await fetch(targetSegmentUrl.href, fetchOpts);
+      const respHeaders = new Headers();
+      for (const [key, val] of upstreamRes.headers.entries()) {
+        if (!EXCLUDED_RESPONSE_HEADERS.has(key.toLowerCase())) {
+          respHeaders.set(key, val);
+        }
+      }
+
+      response = new Response(upstreamRes.body, {
+        status: upstreamRes.status,
+        headers: respHeaders
+      });
+    } catch (e) {
+      response = new Response(`Segment fetch error: ${e.message}`, { status: 502 });
+    }
+  } else {
+    response = new Response("Not Found", { status: 404 });
   }
-};
+
+  return applyCorsHeaders(response);
+}
