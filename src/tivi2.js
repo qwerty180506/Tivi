@@ -222,6 +222,7 @@ async function handleLicenseRequest(tvgId, sourceM3uUrl) {
 /**
  * Fetches JSON ClearKey payload and converts to standardized inline string
  */
+
 async function fetchAndTransformLicense(licenseUrl) {
   try {
     const res = await fetch(licenseUrl, {
@@ -235,16 +236,18 @@ async function fetchAndTransformLicense(licenseUrl) {
     const data = await res.json();
 
     if (data && data.CloudPlay && Array.isArray(data.CloudPlay.keys)) {
-      const keyObj = data.CloudPlay.keys[0];
-      if (keyObj && keyObj.k && keyObj.kid) {
+      // Map ALL valid key objects in the array
+      const transformedKeys = data.CloudPlay.keys
+        .filter(keyObj => keyObj && keyObj.k && keyObj.kid)
+        .map(keyObj => ({
+          kty: keyObj.kty || 'oct',
+          kid: keyObj.kid,
+          k: keyObj.k
+        }));
+
+      if (transformedKeys.length > 0) {
         const compactPayload = {
-          keys: [
-            {
-              kty: keyObj.kty || 'oct',
-              kid: keyObj.kid,
-              k: keyObj.k
-            }
-          ],
+          keys: transformedKeys,
           type: data.CloudPlay.type || 'temporary'
         };
         return JSON.stringify(compactPayload);
@@ -252,7 +255,7 @@ async function fetchAndTransformLicense(licenseUrl) {
     }
     return JSON.stringify(data);
   } catch (err) {
-    return licenseUrl;
+    return JSON.stringify({ error: err.message });
   }
 }
 
