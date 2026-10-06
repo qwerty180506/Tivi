@@ -1,11 +1,5 @@
-// ============================================================
-// CONFIGURATION & SOURCES
-// ============================================================
-
-const SOURCES = {
-  jiotvplus: env.JIOTVPLUS_URL,
-  jiotv: "https://raw.githubusercontent.com/qwerty180506/Geo/refs/heads/main/jiotv_cf.m3u", 
-};
+const SOURCE_M3U_URL = "https://raw.githubusercontent.com/qwerty180506/Geo/refs/heads/main/jiotv_cf.m3u";
+const ROUTE_PREFIX = "jiotv";
 
 // Helper function to turn channel names into URL slugs
 function slugify(text) {
@@ -40,13 +34,8 @@ function getChannelId(extinfLine) {
 // FETCH SOURCE M3U WITH CLOUDFLARE CACHE
 // ============================================================
 
-async function getM3U(sourceKey) {
-  const m3uUrl = SOURCES[sourceKey];
-  if (!m3uUrl) {
-    throw new Error(`Invalid source provider: ${sourceKey}`);
-  }
-
-  const response = await fetch(m3uUrl, {
+async function getM3U() {
+  const response = await fetch(SOURCE_M3U_URL, {
     headers: {
       "User-Agent": "Mozilla/5.0",
       "Accept": "*/*",
@@ -60,7 +49,7 @@ async function getM3U(sourceKey) {
   });
 
   if (!response.ok) {
-    throw new Error(`M3U fetch failed for ${sourceKey}: HTTP ${response.status}`);
+    throw new Error(`M3U fetch failed: HTTP ${response.status}`);
   }
 
   return await response.text();
@@ -131,7 +120,7 @@ function findChannel(m3u, targetChannelId) {
 // CHANNEL REDIRECT
 // ============================================================
 
-export async function runTiviRedirect(request, sourceKey, channelId) {
+export async function runTiviRedirect(request, channelId) {
   if (!channelId) {
     return new Response("Missing channel ID", {
       status: 400,
@@ -139,22 +128,19 @@ export async function runTiviRedirect(request, sourceKey, channelId) {
   }
 
   try {
-    const m3u = await getM3U(sourceKey);
+    const m3u = await getM3U();
     const channel = findChannel(m3u, channelId);
 
     if (!channel) {
-      return new Response(`Channel ID '${channelId}' not found in ${sourceKey}`, {
+      return new Response(`Channel ID '${channelId}' not found`, {
         status: 404,
       });
     }
 
     if (!channel.url) {
-      return new Response(
-        `Stream URL not found for channel ${channelId} in ${sourceKey}`,
-        {
-          status: 404,
-        }
-      );
+      return new Response(`Stream URL not found for channel '${channelId}'`, {
+        status: 404,
+      });
     }
 
     // Redirect directly to the real stream URL
@@ -170,9 +156,9 @@ export async function runTiviRedirect(request, sourceKey, channelId) {
 // GENERATE PLAYLIST
 // ============================================================
 
-export async function runTiviPlaylist(request, sourceKey) {
+export async function runTiviPlaylist(request) {
   try {
-    const m3u = await getM3U(sourceKey);
+    const m3u = await getM3U();
     const lines = m3u.split(/\r?\n/);
     const workerBase = new URL(request.url).origin;
     const output = [];
@@ -217,8 +203,8 @@ export async function runTiviPlaylist(request, sourceKey) {
           continue;
         }
 
-        // Output channel link directly as: /<sourceKey>/<channelId>
-        output.push(`${workerBase}/${sourceKey}/${encodeURIComponent(channelId)}`);
+        // Output channel link directly as: /jiotv/<channelId>
+        output.push(`${workerBase}/${ROUTE_PREFIX}/${encodeURIComponent(channelId)}`);
 
         // Skip original URL in outer loop
         i = j;
@@ -251,41 +237,41 @@ export async function runTiviPlaylist(request, sourceKey) {
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-    // Strip leading/trailing slashes and query parameters
     const pathname = url.pathname.replace(/^\/+|\/+$/g, "");
     const parts = pathname.split("/").filter(Boolean);
 
     // Root check
     if (parts.length === 0) {
-      return new Response("M3U Worker Active. Valid endpoints: /jiotvplus/playlist, /jiotv/playlist", {
+      return new Response(`M3U Worker Active.\nValid endpoints:\n- /${ROUTE_PREFIX}/playlist\n- /${ROUTE_PREFIX}/<channelId>`, {
         status: 200,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
     }
 
     const sourceKey = parts[0]?.toLowerCase();
     const subPath = parts[1];
 
-    // Verify provider exists in SOURCES dictionary
-    if (!sourceKey || !SOURCES[sourceKey]) {
-      return new Response(
-        "Invalid provider source. Supported endpoints start with /jiotvplus/ or /jiotv/",
-        { status: 400 }
-      );
+    // Ensure route starts with /jiotv/
+    if (sourceKey !== ROUTE_PREFIX) {
+      return new Response(`Invalid path prefix. Use /${ROUTE_PREFIX}/playlist or /${ROUTE_PREFIX}/<channelId>`, {
+        status: 400,
+      });
     }
 
-    // 1. Missing channel or missing endpoint action
     if (!subPath) {
-      return new Response("Missing channel ID or action", { status: 400 });
+      return new Response(`Missing channel ID or action (e.g. /${ROUTE_PREFIX}/playlist)`, {
+        status: 400,
+      });
     }
 
     const decodedSubPath = decodeURIComponent(subPath).toLowerCase();
 
-    // 2. Playlist Endpoint: /jiotvplus/playlist or /jiotvplus/playlist.m3u
+    // 1. Playlist Endpoint: /jiotv/playlist or /jiotv/playlist.m3u
     if (decodedSubPath === "playlist" || decodedSubPath === "playlist.m3u") {
-      return runTiviPlaylist(request, sourceKey);
+      return runTiviPlaylist(request);
     }
 
-    // 3. Direct Channel Endpoint: /jiotvplus/<channelId> or /jiotv/<channelId>
-    return runTiviRedirect(request, sourceKey, subPath);
+    // 2. Direct Channel Endpoint: /jiotv/<channelId>
+    return runTiviRedirect(request, subPath);
   },
 };
