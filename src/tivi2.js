@@ -1,20 +1,24 @@
-
-export const SOURCE_M3U_URL = env.JIOTVPLUS_URL;
-
-
 export async function handleRequest(request, env, ctx) {
   const url = new URL(request.url);
   const origin = url.origin;
+  const sourceM3uUrl = env?.JIOTVPLUS_URL;
 
-  // Handle Route 1: GET /playlist
-  if (url.pathname === '/playlist' && request.method === 'GET') {
-    return handlePlaylistRequest(origin);
+  if (!sourceM3uUrl) {
+    return new Response('Environment variable JIOTVPLUS_URL is not configured.', { status: 500 });
   }
 
-  // Handle Route 2: GET /?id={tvg-id}
+  // Normalize pathname to handle trailing slashes cleanly
+  const pathname = url.pathname.replace(/\/$/, '') || '/';
+
+  // Handle Route 1: GET /jiotvplus/playlist (and /jiotvplus/playlist.m3u)
+  if ((pathname === '/jiotvplus/playlist' || pathname === '/jiotvplus/playlist.m3u') && request.method === 'GET') {
+    return handlePlaylistRequest(origin, sourceM3uUrl);
+  }
+
+  // Handle Route 2: GET /jiotvplus/?id={tvg-id}
   const tvgId = url.searchParams.get('id');
-  if (tvgId && request.method === 'GET') {
-    return handleLookupRedirect(tvgId);
+  if (pathname === '/jiotvplus' && tvgId && request.method === 'GET') {
+    return handleLookupRedirect(tvgId, sourceM3uUrl);
   }
 
   // Default 404 response for unhandled routes
@@ -36,11 +40,11 @@ const CORS_HEADERS = {
 };
 
 /**
- * Handles GET /playlist
+ * Handles GET /jiotvplus/playlist
  */
-async function handlePlaylistRequest(workerOrigin) {
+async function handlePlaylistRequest(workerOrigin, sourceM3uUrl) {
   try {
-    const response = await fetch(SOURCE_M3U_URL);
+    const response = await fetch(sourceM3uUrl);
     if (!response.ok) {
       return new Response(`Failed to fetch source playlist: ${response.statusText}`, { status: 502 });
     }
@@ -152,7 +156,8 @@ async function processChannelBlock(block, workerOrigin) {
 
   result.push(...block.extvlcopt);
 
-  const modifiedUrl = `${workerOrigin}/?id=${encodeURIComponent(tvgId)}`;
+  // Generates media URL pointing to /jiotvplus/?id={tvg-id}
+  const modifiedUrl = `${workerOrigin}/jiotvplus/?id=${encodeURIComponent(tvgId)}`;
   result.push(modifiedUrl);
 
   return result;
@@ -164,7 +169,9 @@ async function processChannelBlock(block, workerOrigin) {
 async function fetchAndTransformLicense(licenseUrl) {
   try {
     const res = await fetch(licenseUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36' }
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36'
+      }
     });
 
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -194,11 +201,11 @@ async function fetchAndTransformLicense(licenseUrl) {
 }
 
 /**
- * Handles GET /?id={tvg-id} lookup & redirect
+ * Handles GET /jiotvplus/?id={tvg-id} lookup & redirect
  */
-async function handleLookupRedirect(tvgId) {
+async function handleLookupRedirect(tvgId, sourceM3uUrl) {
   try {
-    const response = await fetch(SOURCE_M3U_URL);
+    const response = await fetch(sourceM3uUrl);
     if (!response.ok) {
       return new Response('Error fetching source M3U', { status: 502 });
     }
