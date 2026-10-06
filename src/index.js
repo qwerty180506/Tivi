@@ -1,14 +1,19 @@
 import { runTiviRedirect, runTiviPlaylist } from "./tivi.js";
+import { handleRequest as handleWorkerRequest } from "./tivi2.js";
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    // Strip leading/trailing slashes and extract path segments
+
+    if (url.pathname === '/playlist' || (url.pathname === '/' && url.searchParams.has('id'))) {
+      return await handleWorkerRequest(request, env, ctx);
+    }
+
     const parts = url.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
 
     // Root endpoint check (e.g. GET /)
     if (parts.length === 0) {
-      return new Response("TIVI Worker Active. Endpoints: /jiotvplus/playlist, /jiotv/playlist", {
+      return new Response("TIVI Worker Active. \nEndpoints: \n- /jiotvplus/playlist \n- /jiotv/playlist \n- /playlist \n- /?id={tvg-id}", {
         status: 200,
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
@@ -18,7 +23,7 @@ export default {
 
     // Reject unknown providers early
     if (sourceKey !== "jiotvplus" && sourceKey !== "jiotv") {
-      return new Response("Invalid provider source. Use /jiotvplus/ or /jiotv/", {
+      return new Response("Invalid provider source. Use /jiotvplus/ or /jiotv/ or /playlist", {
         status: 400,
       });
     }
