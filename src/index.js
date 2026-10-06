@@ -36,12 +36,12 @@ export default {
 
       // Playlist Endpoint: /jiotv/playlist OR /jiotv/playlist.m3u
       if (action === "playlist" || action === "playlist.m3u") {
-        return await runTiviPlaylist(request, sourceKey);
+        return await runTiviPlaylist(request);
       }
 
       // Direct Channel Redirect: /jiotv/<channelId>
       if (request.method === "GET") {
-        return await runTiviRedirect(request, sourceKey, subPath);
+       return await runTiviRedirect(request, subPath);
       }
 
       return new Response("Method Not Allowed", { status: 405 });
