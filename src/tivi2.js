@@ -1,5 +1,5 @@
 
-export const SOURCE_M3U_URL = 'https://example.com/path/to/source/playlist.m3u';
+export const SOURCE_M3U_URL = env.JIOTVPLUS_URL;
 
 
 export async function handleRequest(request, env, ctx) {
