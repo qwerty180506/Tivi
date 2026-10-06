@@ -3,7 +3,7 @@
 // ============================================================
 
 const SOURCES = {
-  jiotvplus: "https://premiumplugx.top/jiostb/mjelo.php?view=raw",
+  jiotvplus: "https://m3u.cloudplay.qzz.io/jtvx.m3u",
   jiotv: "https://raw.githubusercontent.com/qwerty180506/Geo/refs/heads/main/jiotv_cf.m3u", 
 };
 
