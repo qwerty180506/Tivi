@@ -3,7 +3,7 @@
 // ============================================================
 
 const SOURCES = {
-  jiotvplus: "https://m3u.cloudplay.qzz.io/jtvx.m3u",
+  jiotvplus: env.JIOTVPLUS_URL,
   jiotv: "https://raw.githubusercontent.com/qwerty180506/Geo/refs/heads/main/jiotv_cf.m3u", 
 };
 
