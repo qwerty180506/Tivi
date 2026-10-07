@@ -122,6 +122,53 @@ function parseAndTransformM3U(m3uText, workerOrigin) {
 }
 
 /**
+ * Helper to check if a license value is inline keys (single or multikey pair)
+ */
+function isInlineKeyFormat(val) {
+  if (!val) return false;
+  // HTTP/HTTPS URLs are treated as external license URLs
+  if (val.startsWith('http://') || val.startsWith('https://')) {
+    return false;
+  }
+  // If it contains KID:KEY or JSON or comma-separated pairs
+  return val.includes(':') || val.startsWith('{');
+}
+
+/**
+ * Converts inline KID:KEY pairs or multikeys to JSON ClearKey format
+ */
+function formatInlineKeysToJSON(rawVal) {
+  // If it's already a JSON payload, pass it through directly
+  if (rawVal.startsWith('{')) {
+    return rawVal;
+  }
+
+  // Parse KID:KEY,KID:KEY multikey strings
+  const pairs = rawVal.split(',');
+  const transformedKeys = [];
+
+  for (const pair of pairs) {
+    const [kid, k] = pair.split(':').map(s => s.trim());
+    if (kid && k) {
+      transformedKeys.push({
+        kty: 'oct',
+        kid: kid,
+        k: k
+      });
+    }
+  }
+
+  if (transformedKeys.length > 0) {
+    return JSON.stringify({
+      keys: transformedKeys,
+      type: 'temporary'
+    });
+  }
+
+  return rawVal;
+}
+
+/**
  * Rewrites URLs for channel playback and license key proxying.
  */
 function processChannelBlock(block, workerOrigin) {
@@ -142,9 +189,16 @@ function processChannelBlock(block, workerOrigin) {
 
   for (const prop of block.kodiprops) {
     if (prop.startsWith('#KODIPROP:inputstream.adaptive.license_key=')) {
-      // Direct license key requests to on-demand worker endpoint
-      const proxyLicenseUrl = `${workerOrigin}/jiotvplus/license/?id=${encodeURIComponent(tvgId)}`;
-      result.push(`#KODIPROP:inputstream.adaptive.license_key=${proxyLicenseUrl}`);
+      const licenseVal = prop.replace('#KODIPROP:inputstream.adaptive.license_key=', '').trim();
+      
+      // If license_key is inline key(s) or multikey format, keep as is
+      if (isInlineKeyFormat(licenseVal)) {
+        result.push(prop);
+      } else {
+        // Direct license URL requests to on-demand worker endpoint
+        const proxyLicenseUrl = `${workerOrigin}/jiotvplus/license/?id=${encodeURIComponent(tvgId)}`;
+        result.push(`#KODIPROP:inputstream.adaptive.license_key=${proxyLicenseUrl}`);
+      }
     } else {
       result.push(prop);
     }
@@ -174,7 +228,7 @@ async function handleLicenseRequest(tvgId, sourceM3uUrl) {
     const lines = playlistText.split(/\r?\n/);
 
     let isTargetBlock = false;
-    let rawLicenseUrl = null;
+    let rawLicenseVal = null;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -183,14 +237,14 @@ async function handleLicenseRequest(tvgId, sourceM3uUrl) {
         const match = line.match(/tvg-id="([^"]+)"/);
         isTargetBlock = !!(match && match[1] === tvgId);
         if (isTargetBlock) {
-          rawLicenseUrl = null;
+          rawLicenseVal = null;
         }
         continue;
       }
 
       if (isTargetBlock) {
         if (line.startsWith('#KODIPROP:inputstream.adaptive.license_key=')) {
-          rawLicenseUrl = line.replace('#KODIPROP:inputstream.adaptive.license_key=', '').trim();
+          rawLicenseVal = line.replace('#KODIPROP:inputstream.adaptive.license_key=', '').trim();
           break;
         } else if (line !== '' && !line.startsWith('#')) {
           // Reached stream URL without finding license key tag
@@ -199,12 +253,25 @@ async function handleLicenseRequest(tvgId, sourceM3uUrl) {
       }
     }
 
-    if (!rawLicenseUrl) {
+    if (!rawLicenseVal) {
       return new Response(`License URL for tvg-id "${tvgId}" not found`, { status: 404 });
     }
 
+    // If it's inline multikey string/payload, format to JSON ClearKey structure and return directly
+    if (isInlineKeyFormat(rawLicenseVal)) {
+      const formattedJson = formatInlineKeysToJSON(rawLicenseVal);
+      return new Response(formattedJson, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          ...CORS_HEADERS
+        }
+      });
+    }
+
     // Fetch original JSON key and convert to formatted payload
-    const licensePayload = await fetchAndTransformLicense(rawLicenseUrl);
+    const licensePayload = await fetchAndTransformLicense(rawLicenseVal);
 
     return new Response(licensePayload, {
       status: 200,
@@ -222,7 +289,6 @@ async function handleLicenseRequest(tvgId, sourceM3uUrl) {
 /**
  * Fetches JSON ClearKey payload and converts to standardized inline string
  */
-
 async function fetchAndTransformLicense(licenseUrl) {
   try {
     const res = await fetch(licenseUrl, {
@@ -303,17 +369,21 @@ async function handleLookupRedirect(tvgId, sourceM3uUrl) {
       return new Response(`Channel with tvg-id "${tvgId}" not found`, { status: 404 });
     }
 
-    let hdneaCookie = '';
-    if (extHttpValue) {
-      const cookieMatch = extHttpValue.match(/__hdnea__=([^"&\s;]+)/);
-      if (cookieMatch) {
-        hdneaCookie = cookieMatch[1];
-      }
-    }
-
     const targetUrl = new URL(rawMediaUrl);
-    if (hdneaCookie) {
-      targetUrl.searchParams.set('__hdnea__', hdneaCookie);
+
+    // If URL already contains a cookie parameter like __hdnea__, keep it as is
+    if (!targetUrl.searchParams.has('__hdnea__')) {
+      let hdneaCookie = '';
+      if (extHttpValue) {
+        const cookieMatch = extHttpValue.match(/__hdnea__=([^"&\s;]+)/);
+        if (cookieMatch) {
+          hdneaCookie = cookieMatch[1];
+        }
+      }
+
+      if (hdneaCookie) {
+        targetUrl.searchParams.set('__hdnea__', hdneaCookie);
+      }
     }
 
     return Response.redirect(targetUrl.toString(), 302);
